@@ -5,7 +5,6 @@ import logging
 import re
 import sys
 from collections import Counter
-from functools import partial
 
 import aiohttp
 import click
@@ -208,7 +207,7 @@ async def heartbeat_url_scan(filters):
     def get_urls(recipe):
         log.debug(f"processing recipe {recipe['id']}")
 
-        for key in ['latest_revision', 'approved_revision']:
+        for key in ["latest_revision", "approved_revision"]:
             if not recipe.get(key):
                 continue
             args = recipe[key]["arguments"]
