@@ -68,6 +68,15 @@ class Iso8601Param(click.ParamType):
             self.fail(str(e), param, ctx)
 
 
+def with_session(async_func):
+    @click_compatible_wraps(async_func)
+    async def inner(*args, **kwargs):
+        async with aiohttp.ClientSession() as session:
+            return await async_func(session, *args, **kwargs)
+
+    return inner
+
+
 @click.group()
 def cli():
     pass
@@ -77,9 +86,15 @@ def filter_options(func):
     @click.option("--text", "-t")
     @click.option("--enabled", "-e", is_flag=True, default=None)
     @click.option("--action", "-a")
+    @click.option("--creator", "-c")
     @click_compatible_wraps(func)
-    def filter_parser(text, enabled, action, *args, **kwargs):
-        filters = {"text": text, "enabled": enabled, "action": action}
+    def filter_parser(text, enabled, action, creator, *args, **kwargs):
+        filters = {
+            "text": text,
+            "enabled": enabled,
+            "action": action,
+            "creator": creator,
+        }
         return func(filters, *args, **kwargs)
 
     return filter_parser
@@ -113,7 +128,7 @@ def async_trampoline(async_func):
     return sync_func
 
 
-async def fetch_recipes(session, *, text=None, enabled=None, action=None):
+async def fetch_recipes(session, *, text=None, enabled=None, action=None, creator=None):
     query = {}
     if text is not None:
         query["text"] = text
@@ -134,6 +149,19 @@ async def fetch_recipes(session, *, text=None, enabled=None, action=None):
             data = await api_fetch(session, next_url)
             next_url = data["next"]
             for recipe in data["results"]:
+                if creator is not None:
+                    approved_creator = (
+                        recipe.get("latest_revision", {}).get("creator", {}) or {}
+                    ).get("email", "")
+                    latest_creator = (
+                        recipe.get("latest_revision", {}).get("creator", {}) or {}
+                    ).get("email", "")
+                    if (
+                        creator not in approved_creator
+                        and creator not in latest_creator
+                    ):
+                        continue
+
                 yield recipe
             progress_bar.update(len(data["results"]))
 
@@ -142,17 +170,17 @@ async def fetch_recipes(session, *, text=None, enabled=None, action=None):
 @filter_options
 @logging_options
 @async_trampoline
-async def filter_inputs(filters):
+@with_session
+async def filter_inputs(session, filters):
     """find all filter inputs"""
     all_inputs = Counter()
     input_regex = re.compile(r"\[([^]]*)\]\|(stable|bucket)Sample", re.MULTILINE)
 
-    async with aiohttp.ClientSession() as session:
-        async for recipe in fetch_recipes(session, **filters):
-            exp = recipe["latest_revision"]["filter_expression"]
-            for match in input_regex.finditer(exp):
-                for input in (inp.strip() for inp in match.group(1).split(", ")):
-                    all_inputs[input] += 1
+    async for recipe in fetch_recipes(session, **filters):
+        exp = recipe["latest_revision"]["filter_expression"]
+        for match in input_regex.finditer(exp):
+            for input in (inp.strip() for inp in match.group(1).split(", ")):
+                all_inputs[input] += 1
 
     for (input, count) in all_inputs.most_common():
         log.info(f"{count:>3} {input}")
@@ -164,30 +192,29 @@ async def filter_inputs(filters):
 @click.option("--begin", "-b", required=True, type=Iso8601Param(), prompt=True)
 @click.option("--end", "-e", required=True, type=Iso8601Param(), prompt=True)
 @async_trampoline
-async def enabled_range(filters, begin=None, end=None):
+@with_session
+async def enabled_range(session, filters, begin=None, end=None):
     """Find all recipes enabled during a certain time range"""
-    async with aiohttp.ClientSession() as session:
+    async def potentially_enabled(recipe):
+        rev = recipe["latest_revision"]
+        if iso8601.parse_date(rev["updated"]) < begin and not rev["enabled"]:
+            return False
+        return True
 
-        async def potentially_enabled(recipe):
-            rev = recipe["latest_revision"]
-            if iso8601.parse_date(rev["updated"]) < begin and not rev["enabled"]:
-                return False
-            return True
+    async def fetch_history(recipe):
+        history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
+        return history
 
-        async def fetch_history(recipe):
-            history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
-            return history
+    histories = (
+        fetch_recipes(session, **filters)
+        | pipeline.filter(potentially_enabled)
+        | pipeline.map(fetch_history)
+    )
 
-        histories = (
-            fetch_recipes(session, **filters)
-            | pipeline.filter(potentially_enabled)
-            | pipeline.map(fetch_history)
-        )
-
-        _histories = []
-        async for h in histories:
-            _histories.append(h)
-        histories = _histories
+    _histories = []
+    async for h in histories:
+        _histories.append(h)
+    histories = _histories
 
     log.info(f"{len(histories)} recipes")
 
@@ -196,7 +223,8 @@ async def enabled_range(filters, begin=None, end=None):
 @filter_options
 @logging_options
 @async_trampoline
-async def heartbeat_url_scan(filters):
+@with_session
+async def heartbeat_url_scan(session, filters):
     """Print all URLs used in heartbeat recipes"""
     if filters.get("action") not in ["show-heartbeat", None]:
         log.error(f"Can only run on action=show-heartbeat, not {filters.get('action')}")
@@ -216,13 +244,36 @@ async def heartbeat_url_scan(filters):
             if args.get("postAnswerUrl"):
                 yield args["postAnswerUrl"]
 
-    async with aiohttp.ClientSession() as session:
-        urls = set()
-        async for recipe in fetch_recipes(session, **filters):
-            for url in get_urls(recipe):
-                if url not in urls:
-                    log.info(url)
-                    urls.add(url)
+    urls = set()
+    async for recipe in fetch_recipes(session, **filters):
+        for url in get_urls(recipe):
+            if url not in urls:
+                log.info(url)
+                urls.add(url)
+
+
+@cli.command("list-recipes")
+@filter_options
+@logging_options
+@async_trampoline
+@with_session
+async def list_recipes(session, filters):
+    async for recipe in fetch_recipes(session, **filters):
+        rev = recipe["latest_revision"]
+        log.info(f"{recipe['id']} - {rev['name']}")
+
+
+@cli.command("slugs")
+@filter_options
+@logging_options
+@async_trampoline
+@with_session
+async def slugs(session, filters):
+    async for recipe in fetch_recipes(session, **filters):
+        rev = recipe["latest_revision"]
+        slug = rev["arguments"].get("slug") or rev["arguments"].get("name")
+        if slug:
+            log.info(slug)
 
 
 if __name__ == "__main__":
