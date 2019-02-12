@@ -13,7 +13,35 @@ from tqdm import tqdm
 from pypeln import asyncio_task as pipeline
 
 
-SERVER_URL = "https://normandy.cdn.mozilla.net"
+META_SERVER_KEY = __name__ + ".server"
+
+SERVERS = {
+    "prod": {
+        "public": "https://normandy.cdn.mozilla.net",
+        "admin": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
+    },
+    "stage": {
+        "public": "https://stage.normandy.nonprod.cloudops.mozgcp.net",
+        "admin": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
+    },
+    "dev": {
+        "public": "https://dev.normandy.nonprod.cloudops.mozgcp.net",
+        "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
+    },
+    "prod-admin": {
+        "public": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
+        "admin": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
+    },
+    "stage-admin": {
+        "public": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
+        "admin": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
+    },
+    "dev-admin": {
+        "public": "https://dev-ademin.normandy.nonprod.cloudops.mozgcp.net",
+        "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
+    },
+    "local": {"public": "https://localhost:8000", "admin": "https://localhost:8000"},
+}
 
 
 class TqdmLoggingHandler(logging.Handler):
@@ -40,10 +68,12 @@ def compose(*functions):
     return functools.reduce(compose2, functions, lambda x: x)
 
 
-async def api_fetch(session, endpoint, opts=None, *, version=3):
+async def api_request(
+    session, verb, endpoint, *, opts=None, data=None, version=3, admin=False
+):
     if endpoint.startswith("http"):
         if opts is not None:
-            raise Exception("Can't pass opts with a full url")
+            raise click.ClickException("Can't pass opts with a full url")
         url = endpoint
     else:
         if endpoint.startswith("/"):
@@ -51,13 +81,40 @@ async def api_fetch(session, endpoint, opts=None, *, version=3):
         if endpoint.endswith("/"):
             endpoint = endpoint[:-1]
         if "?" in endpoint:
-            raise Exception("Don't include query string in endpoint")
+            raise click.ClickException("Don't include query string in endpoint")
         qs = "?" + "&".join(f"{k}={v}" for k, v in opts.items()) if opts else ""
-        url = f"{SERVER_URL}/api/v{version}/{endpoint}/{qs}"
 
-    log.debug(f"GET {url}")
-    async with session.get(url) as resp:
-        return json.loads(await resp.text())
+        server_url = click.get_current_context().meta[META_SERVER_KEY][
+            "admin" if admin else "public"
+        ]
+        url = f"{server_url}/api/v{version}/{endpoint}/{qs}"
+
+    if verb in ["GET", "HEAD"] and data is not None:
+        raise Exception("Can't include a body for {verb} requests")
+
+    if data:
+        log.debug(f"{verb} {url} {data}")
+    else:
+        log.debug(f"{verb} {url}")
+    verb_method = getattr(session, verb.lower())
+    async with verb_method(url, data=data) as resp:
+        if resp.status >= 400:
+            raise click.ClickException(
+                f"HTTP Error Code {resp.status}: {await resp.text()}"
+            )
+        if resp.status == 204:
+            return None
+        try:
+            return json.loads(await resp.text())
+        except json.decoder.JSONDecodeError:
+            log.debug(await resp.text())
+            raise
+
+
+async def api_fetch(session, endpoint, opts=None, *, version=3, admin=False):
+    return await api_request(
+        session, "GET", endpoint, opts=opts, version=version, admin=admin
+    )
 
 
 class Iso8601Param(click.ParamType):
@@ -72,14 +129,27 @@ def with_session(async_func):
     @click_compatible_wraps(async_func)
     async def inner(*args, **kwargs):
         async with aiohttp.ClientSession() as session:
-            return await async_func(session, *args, **kwargs)
+            return await async_func(*args, session=session, **kwargs)
 
     return inner
 
 
-@click.group()
-def cli():
-    pass
+def with_authed_session(async_func):
+    @click.option("-A", "--auth", required=True, allow_from_autoenv=True, prompt=True)
+    @click_compatible_wraps(async_func)
+    async def inner(auth, *args, **kwargs):
+        if not auth.lower().startswith("bearer "):
+            auth = "Bearer " + auth
+        headers = {"Authorization": auth}
+        async with aiohttp.ClientSession(headers=headers) as authed_session:
+            return await async_func(*args, authed_session=authed_session, **kwargs)
+
+    return inner
+
+
+def click_compatible_wraps(wrapped_func):
+    assignments = [*functools.WRAPPER_ASSIGNMENTS, "__click_params__"]
+    return functools.wraps(wrapped_func, assignments)
 
 
 def filter_options(func):
@@ -111,9 +181,30 @@ def logging_options(func):
     return logging_wrapper
 
 
-def click_compatible_wraps(wrapped_func):
-    assignments = [*functools.WRAPPER_ASSIGNMENTS, "__click_params__"]
-    return functools.wraps(wrapped_func, assignments)
+def server_options(func):
+    @click.option(
+        "--server",
+        "-s",
+        type=click.Choice(
+            ["prod", "stage", "dev", "local", "prod-admin", "stage-admin", "dev-admin"]
+        ),
+        default="prod",
+    )
+    @click.pass_context
+    @click_compatible_wraps(func)
+    def logging_wrapper(context, *args, server, verbose=False, **kwargs):
+        server_url = SERVERS[server]
+        context.meta[META_SERVER_KEY] = server_url
+        return func(*args, **kwargs)
+
+    return logging_wrapper
+
+
+@click.group()
+@logging_options
+@server_options
+def cli():
+    pass
 
 
 def async_trampoline(async_func):
@@ -128,6 +219,24 @@ def async_trampoline(async_func):
     return sync_func
 
 
+async def paginated_fetch(session, endpoint, *, query=None, admin=False, desc="fetch"):
+    with tqdm(desc=desc) as progress_bar:
+        data = await api_fetch(session, endpoint, query, admin=admin)
+        progress_bar.total = data["count"]
+        next_url = data["next"]
+        for v in data["results"]:
+            yield v
+            progress_bar.update(1)
+
+        while next_url:
+            data = await api_fetch(session, next_url, admin=admin)
+            progress_bar.total = data["count"]
+            next_url = data["next"]
+            for v in data["results"]:
+                yield v
+                progress_bar.update(1)
+
+
 async def fetch_recipes(session, *, text=None, enabled=None, action=None, creator=None):
     query = {}
     if text is not None:
@@ -137,38 +246,29 @@ async def fetch_recipes(session, *, text=None, enabled=None, action=None, creato
     if action is not None:
         query["action"] = action
 
-    with tqdm(desc="fetch recipes") as progress_bar:
-        data = await api_fetch(session, "recipe", query)
-        progress_bar.total = data["count"]
-        next_url = data["next"]
-        for recipe in data["results"]:
+    def match_creator(recipe):
+        if creator is None:
+            return True
+        else:
+            approved_creator = (
+                recipe.get("latest_revision", {}).get("creator", {}) or {}
+            ).get("email", "")
+            latest_creator = (
+                recipe.get("latest_revision", {}).get("creator", {}) or {}
+            ).get("email", "")
+            return creator not in approved_creator and creator not in latest_creator
+
+    async for recipe in paginated_fetch(
+        session, "recipe", query=query, desc="fetch recipes"
+    ):
+        if match_creator(recipe):
             yield recipe
-        progress_bar.update(len(data["results"]))
-
-        while next_url:
-            data = await api_fetch(session, next_url)
-            next_url = data["next"]
-            for recipe in data["results"]:
-                if creator is not None:
-                    approved_creator = (
-                        recipe.get("latest_revision", {}).get("creator", {}) or {}
-                    ).get("email", "")
-                    latest_creator = (
-                        recipe.get("latest_revision", {}).get("creator", {}) or {}
-                    ).get("email", "")
-                    if (
-                        creator not in approved_creator
-                        and creator not in latest_creator
-                    ):
-                        continue
-
-                yield recipe
-            progress_bar.update(len(data["results"]))
 
 
 @cli.command("filter-inputs")
 @filter_options
 @logging_options
+@server_options
 @async_trampoline
 @with_session
 async def filter_inputs(session, filters):
@@ -189,12 +289,14 @@ async def filter_inputs(session, filters):
 @cli.command("enabled-range")
 @filter_options
 @logging_options
+@server_options
 @click.option("--begin", "-b", required=True, type=Iso8601Param(), prompt=True)
 @click.option("--end", "-e", required=True, type=Iso8601Param(), prompt=True)
 @async_trampoline
 @with_session
 async def enabled_range(session, filters, begin=None, end=None):
     """Find all recipes enabled during a certain time range"""
+
     async def potentially_enabled(recipe):
         rev = recipe["latest_revision"]
         if iso8601.parse_date(rev["updated"]) < begin and not rev["enabled"]:
@@ -222,6 +324,7 @@ async def enabled_range(session, filters, begin=None, end=None):
 @cli.command("heartbeat-url-scan")
 @filter_options
 @logging_options
+@server_options
 @async_trampoline
 @with_session
 async def heartbeat_url_scan(session, filters):
@@ -255,6 +358,7 @@ async def heartbeat_url_scan(session, filters):
 @cli.command("list-recipes")
 @filter_options
 @logging_options
+@server_options
 @async_trampoline
 @with_session
 async def list_recipes(session, filters):
@@ -266,6 +370,7 @@ async def list_recipes(session, filters):
 @cli.command("slugs")
 @filter_options
 @logging_options
+@server_options
 @async_trampoline
 @with_session
 async def slugs(session, filters):
@@ -276,5 +381,57 @@ async def slugs(session, filters):
             log.info(slug)
 
 
+@cli.command("groups")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+async def groups(authed_session):
+    async for group in paginated_fetch(
+        authed_session, "group", admin=True, desc="fetch groups"
+    ):
+        log.info(group)
+
+
+@cli.command("users")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+async def users(authed_session):
+    async for user in paginated_fetch(
+        authed_session, "user", admin=True, desc="fetch users"
+    ):
+        groups = [g["name"] for g in user["groups"]]
+        log.info(f"{user['id']} - {user['email']} - [{', '.join(groups)}]")
+
+
+@cli.command("whoami")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+async def whoami(authed_session):
+    log.info(await api_fetch(authed_session, "user/me", admin=True, version=1))
+
+
+@cli.command("add-users-to-group")
+@logging_options
+@server_options
+@click.option("--user-id", "-u", required=True, prompt=True, multiple=True)
+@click.option("--group-id", "-g", required=True, prompt=True)
+@async_trampoline
+@with_authed_session
+async def add_users_to_group(authed_session, user_id, group_id):
+    for uid in user_id:
+        await api_request(
+            authed_session,
+            "POST",
+            f"group/{group_id}/add_user",
+            data={"user_id": uid},
+            admin=True,
+        )
+
+
 if __name__ == "__main__":
-    cli()
+    cli(auto_envvar_prefix="EDI_")
