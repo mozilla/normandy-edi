@@ -165,7 +165,7 @@ def filter_options(func):
             "action": action,
             "creator": creator,
         }
-        return func(filters, *args, **kwargs)
+        return func(*args, filters=filters, **kwargs)
 
     return filter_parser
 
@@ -295,7 +295,7 @@ async def filter_inputs(session, filters):
 @async_trampoline
 @with_session
 async def enabled_range(session, filters, begin=None, end=None):
-    """Find all recipes enabled during a certain time range"""
+    """Show recipes enabled during a time range"""
 
     async def potentially_enabled(recipe):
         rev = recipe["latest_revision"]
