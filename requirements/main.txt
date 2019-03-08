@@ -46,3 +46,6 @@ pypeln==0.1.4 \
 flake8==3.7.4 \
     --hash=sha256:e0f8cd519cfc0072c0ee31add5def09d2b3ef6040b34dc426445c3af9b02163c \
     --hash=sha256:09b9bb539920776da542e67a570a5df96ff933c9a08b62cfae920bcc789e4383
+pyjq==2.3.1 \
+    --hash=sha256:45f7688d8191a4043e7c4839d6cabff8f16abc98fe48c3a4a0cc2da05c62096d \
+    --hash=sha256:5f3cd45b856ae4b42a1058d2e91e13d84df5ea188aedc3ae397dc0e01c270db9

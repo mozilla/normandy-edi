@@ -9,6 +9,7 @@ from collections import Counter
 import aiohttp
 import click
 import iso8601
+import pyjq
 from tqdm import tqdm
 from pypeln import asyncio_task as pipeline
 
@@ -219,25 +220,38 @@ def async_trampoline(async_func):
     return sync_func
 
 
-async def paginated_fetch(session, endpoint, *, query=None, admin=False, desc="fetch"):
-    with tqdm(desc=desc) as progress_bar:
+async def paginated_fetch(
+    session, endpoint, *, query=None, admin=False, desc="fetch", limit=None
+):
+    count = 0
+    with tqdm(desc=desc, total=limit) as progress_bar:
         data = await api_fetch(session, endpoint, query, admin=admin)
-        progress_bar.total = data["count"]
+        if limit is None:
+            progress_bar.total = data["count"]
         next_url = data["next"]
         for v in data["results"]:
             yield v
+            count += 1
             progress_bar.update(1)
+            if limit is not None and count >= limit:
+                return
 
         while next_url:
             data = await api_fetch(session, next_url, admin=admin)
-            progress_bar.total = data["count"]
+            if limit is None:
+                progress_bar.total = data["count"]
             next_url = data["next"]
             for v in data["results"]:
                 yield v
+                count += 1
                 progress_bar.update(1)
+                if limit is not None and count >= limit:
+                    return
 
 
-async def fetch_recipes(session, *, text=None, enabled=None, action=None, creator=None):
+async def fetch_recipes(
+    session, *, text=None, enabled=None, action=None, creator=None, limit=None
+):
     query = {}
     if text is not None:
         query["text"] = text
@@ -259,7 +273,7 @@ async def fetch_recipes(session, *, text=None, enabled=None, action=None, creato
             return creator not in approved_creator and creator not in latest_creator
 
     async for recipe in paginated_fetch(
-        session, "recipe", query=query, desc="fetch recipes"
+        session, "recipe", query=query, desc="fetch recipes", limit=limit
     ):
         if match_creator(recipe):
             yield recipe
@@ -355,18 +369,6 @@ async def heartbeat_url_scan(session, filters):
                 urls.add(url)
 
 
-@cli.command("list-recipes")
-@filter_options
-@logging_options
-@server_options
-@async_trampoline
-@with_session
-async def list_recipes(session, filters):
-    async for recipe in fetch_recipes(session, **filters):
-        rev = recipe["latest_revision"]
-        log.info(f"{recipe['id']} - {rev['name']}")
-
-
 @cli.command("slugs")
 @filter_options
 @logging_options
@@ -451,6 +453,68 @@ async def add_user(authed_session, email, first_name, last_name):
             admin=True,
         )
     )
+
+
+@cli.group()
+@logging_options
+@server_options
+def recipes():
+    pass
+
+
+@recipes.command("all")
+@filter_options
+@logging_options
+@server_options
+@click.option("--jq-query", "-j")
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def all_recipes(session, filters, jq_query, limit):
+    if jq_query:
+        compiled_query = pyjq.compile(jq_query)
+
+    recipes = []
+    async for recipe in fetch_recipes(session, **filters, limit=limit):
+        recipes.append(recipe)
+    if jq_query is not None:
+        recipes = compiled_query.all(recipes)
+
+    if not recipes:
+        log.info("No results")
+
+    for r in recipes:
+        if isinstance(r, str):
+            log.info(r)
+        else:
+            log.info(json.dumps(r, indent=True))
+
+
+@recipes.command("get")
+@filter_options
+@logging_options
+@server_options
+@click.option("--jq-query", "-j")
+@click.argument("recipe_id", type=int)
+@async_trampoline
+@with_session
+async def get_recipe(session, filters, jq_query, recipe_id):
+    if jq_query:
+        compiled_query = pyjq.compile(jq_query)
+
+    recipe = await api_fetch(session, f"recipe/{recipe_id}/")
+    if jq_query is not None:
+        rv = compiled_query.all(recipe)
+    else:
+        rv = recipe
+
+    if not rv:
+        log.info("No results")
+
+    if isinstance(rv, str):
+        log.info(rv)
+    else:
+        log.info(json.dumps(rv, indent=True))
 
 
 if __name__ == "__main__":
