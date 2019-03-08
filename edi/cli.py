@@ -433,5 +433,25 @@ async def add_users_to_group(authed_session, user_id, group_id):
         )
 
 
+@cli.command("add-user")
+@logging_options
+@server_options
+@click.argument("email", required=True)
+@click.argument("first_name", required=True)
+@click.argument("last_name", required=True)
+@async_trampoline
+@with_authed_session
+async def add_user(authed_session, email, first_name, last_name):
+    log.info(
+        await api_request(
+            authed_session,
+            "POST",
+            "user",
+            data={"email": email, "first_name": first_name, "last_name": last_name},
+            admin=True,
+        )
+    )
+
+
 if __name__ == "__main__":
     cli(auto_envvar_prefix="EDI_")
