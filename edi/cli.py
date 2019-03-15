@@ -517,5 +517,85 @@ async def get_recipe(session, filters, jq_query, recipe_id):
         log.info(json.dumps(rv, indent=True))
 
 
+@cli.group()
+@logging_options
+@server_options
+def extensions():
+    pass
+
+
+@extensions.command("all")
+@logging_options
+@server_options
+@click.option("--jq-query", "-j")
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def all_extensions(session, jq_query, limit):
+    if jq_query:
+        compiled_query = pyjq.compile(jq_query)
+
+    extensions = []
+
+    async for extension in paginated_fetch(
+        session, "extension", desc="fetch extensions", limit=limit
+    ):
+        extensions.append(extension)
+    if jq_query is not None:
+        extensions = compiled_query.all(extensions)
+
+    if not extensions:
+        log.info("No results")
+
+    for extension in extensions:
+        if isinstance(extension, str):
+            log.info(extension)
+        else:
+            log.info(json.dumps(extension, indent=True))
+
+
+@cli.command("check-extensions")
+@click.option("--jq-query", "-j")
+@server_options
+@logging_options
+@async_trampoline
+@with_session
+async def check_extensions(session, jq_query):
+    if jq_query:
+        compiled_query = pyjq.compile(jq_query)
+
+    extension_filenames = set()
+    async for extension in paginated_fetch(
+        session, "extension", desc="fetch extensions"
+    ):
+        extension_filenames.add(extension["xpi"].split("/")[-1])
+
+    bad_revisions = []
+    async for revision in paginated_fetch(
+        session, "recipe_revision", desc="fetch revisions"
+    ):
+        try:
+            if revision["action"]["name"] != "opt-out-study":
+                continue
+        except Exception:
+            print("revision=", revision)
+
+        addon_filename = revision["arguments"]["addonUrl"].split("/")[-1]
+        if addon_filename not in extension_filenames:
+            bad_revisions.append(revision)
+
+    if jq_query is not None:
+        bad_revisions = compiled_query.all(bad_revisions)
+
+    if not bad_revisions:
+        log.info("No bad revisions")
+
+    for r in bad_revisions:
+        if isinstance(r, str):
+            log.info(r)
+        else:
+            log.info(json.dumps(r, indent=True))
+
+
 if __name__ == "__main__":
     cli(auto_envvar_prefix="EDI_")
