@@ -4,7 +4,7 @@ import json
 import logging
 import re
 import sys
-from collections import Counter
+from collections import Counter, defaultdict
 
 import aiohttp
 import click
@@ -311,14 +311,22 @@ async def filter_inputs(session, filters):
 async def enabled_range(session, filters, begin=None, end=None):
     """Show recipes enabled during a time range"""
 
+    history_progress = tqdm(desc="Rev histories", total=None, leave=False)
+
     async def potentially_enabled(recipe):
         rev = recipe["latest_revision"]
         if iso8601.parse_date(rev["updated"]) < begin and not rev["enabled"]:
             return False
+        if history_progress.total is None:
+            history_progress.total = 1
+        else:
+            history_progress.total += 1
+        history_progress.update(0)
         return True
 
     async def fetch_history(recipe):
         history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
+        history_progress.update(1)
         return history
 
     histories = (
@@ -327,12 +335,21 @@ async def enabled_range(session, filters, begin=None, end=None):
         | pipeline.map(fetch_history)
     )
 
+    # collect all the histories to count
     _histories = []
+    by_type = defaultdict(lambda: [])
     async for h in histories:
         _histories.append(h)
+        rev = h[0]
+        by_type[rev['action']['name']].append(h)
+        log.info(f" * {rev['recipe']['id']} - {rev['name']}")
     histories = _histories
 
-    log.info(f"{len(histories)} recipes")
+    history_progress.close()
+
+    log.info(f"{len(histories)} recipes active in given range")
+    for action_name, recipes in by_type.items():
+        log.info(f"  * {action_name} - {len(recipes)}")
 
 
 @cli.command("heartbeat-url-scan")
@@ -417,22 +434,22 @@ async def whoami(authed_session):
     log.info(await api_fetch(authed_session, "user/me", admin=True, version=1))
 
 
-@cli.command("add-users-to-group")
+@cli.command("add-user-to-group")
 @logging_options
 @server_options
-@click.option("--user-id", "-u", required=True, prompt=True, multiple=True)
+@click.option("--user-id", "-u", required=True, prompt=True, type=click.INT)
 @click.option("--group-id", "-g", required=True, prompt=True)
 @async_trampoline
 @with_authed_session
-async def add_users_to_group(authed_session, user_id, group_id):
-    for uid in user_id:
-        await api_request(
-            authed_session,
-            "POST",
-            f"group/{group_id}/add_user",
-            data={"user_id": uid},
-            admin=True,
-        )
+async def add_user_to_group(authed_session, user_id, group_id):
+    log.debug(f"user_id: {user_id!r}")
+    await api_request(
+        authed_session,
+        "POST",
+        f"group/{group_id}/add_user",
+        data={"user_id": user_id},
+        admin=True,
+    )
 
 
 @cli.command("add-user")
@@ -595,6 +612,7 @@ async def check_extensions(session, jq_query):
             log.info(r)
         else:
             log.info(json.dumps(r, indent=True))
+
 
 
 if __name__ == "__main__":

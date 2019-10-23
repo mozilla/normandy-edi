@@ -13,6 +13,7 @@ setup(
         "aiodns",
         "iso8601",
         "pypeln",
+        "pyjq",
     ],
     entry_points={"console_scripts": ["edi = edi.cli:cli"]},
 )
