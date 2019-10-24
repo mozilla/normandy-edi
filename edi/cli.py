@@ -136,7 +136,7 @@ def with_session(async_func):
 
 
 def with_authed_session(async_func):
-    @click.option("-A", "--auth", required=True, prompt=True, envvar='EDI_AUTH')
+    @click.option("-A", "--auth", required=True, prompt=True, envvar="EDI_AUTH")
     @click_compatible_wraps(async_func)
     async def inner(auth, *args, **kwargs):
         if not auth.lower().startswith("bearer "):
@@ -345,7 +345,7 @@ async def enabled_range(session, filters, begin=None, end=None):
     async for h in histories:
         _histories.append(h)
         rev = h[0]
-        by_type[rev['action']['name']].append(h)
+        by_type[rev["action"]["name"]].append(h)
         log.info(f" * {rev['recipe']['id']} - {rev['name']}")
     histories = _histories
 
@@ -414,7 +414,6 @@ async def groups(authed_session):
         authed_session, "group", admin=True, desc="fetch groups"
     ):
         log.info(group)
-
 
 
 @cli.group()
@@ -490,15 +489,11 @@ async def add_user(authed_session, email, first_name, last_name):
 @click.option("--user-id", "-u", required=True, prompt=True)
 @async_trampoline
 @with_authed_session
-async def add_user(authed_session, user_id):
+async def delete_user(authed_session, user_id):
     log.info(
-        await api_request(
-            authed_session,
-            "DELETE",
-            f"user/{user_id}/",
-            admin=True,
-        )
+        await api_request(authed_session, "DELETE", f"user/{user_id}/", admin=True)
     )
+
 
 @cli.group()
 @logging_options
@@ -595,10 +590,12 @@ async def empty_recipes(session, filters, jq_query, limit):
 @recipes.command("delete")
 @logging_options
 @server_options
-@click.argument("recipe_ids", type=int, nargs=-1, required=True)  # any number of recipe ids
+@click.argument(
+    "recipe_ids", type=int, nargs=-1, required=True
+)  # any number of recipe ids
 @async_trampoline
 @with_authed_session
-async def delete_extension(authed_session, recipe_ids):
+async def delete_recipes(authed_session, recipe_ids):
     for recipe_id in recipe_ids:
         await api_request(authed_session, "DELETE", f"recipe/{recipe_id}/", admin=True)
 
@@ -612,9 +609,10 @@ async def delete_extension(authed_session, recipe_ids):
 @with_authed_session
 async def revise_experiment(authed_session, recipe, data):
     data = json.loads(data)
-    response = await api_request(authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True)
+    response = await api_request(
+        authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True
+    )
     log.info(response)
-
 
 
 @cli.group()
@@ -711,6 +709,39 @@ async def check_extensions(session, jq_query):
             log.info(r)
         else:
             log.info(json.dumps(r, indent=True))
+
+
+@cli.command("convert-pref-exp")
+@click.argument("old_recipe_json", type=click.File("r"))
+@click.option("--public-name", required=True, prompt=True)
+@click.option("--public-description", required=True, prompt=True)
+def convert_pref_exp(old_recipe_json, public_name, public_description):
+    old_recipe = json.load(old_recipe_json)
+
+    new_recipe = {
+        "branches": [],
+        "experimentDocumentUrl": old_recipe["experimentDocumentUrl"],
+        "slug": old_recipe["slug"],
+        "userFacingDescription": public_description,
+        "userFacingName": public_name,
+    }
+
+    for branch in old_recipe["branches"]:
+        new_recipe["branches"].append(
+            {
+                "ratio": branch["ratio"],
+                "slug": branch["slug"],
+                "preferences": {
+                    old_recipe["preferenceName"]: {
+                        "preferenceBranchType": old_recipe["preferenceBranchType"],
+                        "preferenceType": old_recipe["preferenceType"],
+                        "preferenceValue": branch["value"],
+                    }
+                },
+            }
+        )
+
+    log.info(("=" * 80) + "\n" + json.dumps(new_recipe, indent=2))
 
 
 if __name__ == "__main__":
