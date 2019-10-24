@@ -154,6 +154,10 @@ def click_compatible_wraps(wrapped_func):
 
 
 def filter_options(func):
+    """
+    Common options for filter recipes.
+    """
+
     @click.option("--text", "-t")
     @click.option("--enabled", "-e", is_flag=True, default=None)
     @click.option("--action", "-a")
@@ -534,6 +538,61 @@ async def get_recipe(session, filters, jq_query, recipe_id):
         log.info(json.dumps(rv, indent=True))
 
 
+@recipes.command("empty")
+@filter_options
+@logging_options
+@server_options
+@click.option("--jq-query", "-j")
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def empty_recipes(session, filters, jq_query, limit):
+    if jq_query:
+        compiled_query = pyjq.compile(jq_query)
+
+    recipes = []
+    async for recipe in fetch_recipes(session, **filters, limit=limit):
+        if recipe["latest_revision"] is None:
+            recipes.append(recipe)
+
+    if jq_query is not None:
+        recipes = compiled_query.all(recipes)
+
+    if not recipes:
+        log.info("No results")
+
+    for recipe in recipes:
+        if isinstance(recipe, str):
+            log.info(recipe)
+        else:
+            log.info(json.dumps(recipe, indent=True))
+
+
+@recipes.command("delete")
+@logging_options
+@server_options
+@click.argument("recipe_ids", type=int, nargs=-1, required=True)  # any number of recipe ids
+@async_trampoline
+@with_authed_session
+async def delete_extension(authed_session, recipe_ids):
+    for recipe_id in recipe_ids:
+        await api_request(authed_session, "DELETE", f"recipe/{recipe_id}/", admin=True)
+
+
+@recipes.command("revise")
+@logging_options
+@server_options
+@click.option("-r", "--recipe", type=int, required=True)
+@click.argument("data", type=str, required=True)
+@async_trampoline
+@with_authed_session
+async def revise_experiment(authed_session, recipe, data):
+    data = json.loads(data)
+    response = await api_request(authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True)
+    log.info(response)
+
+
+
 @cli.group()
 @logging_options
 @server_options
@@ -571,6 +630,18 @@ async def all_extensions(session, jq_query, limit):
             log.info(json.dumps(extension, indent=True))
 
 
+@extensions.command("delete")
+@logging_options
+@server_options
+@click.argument("extension_id", type=int)
+@async_trampoline
+@with_authed_session
+async def delete_extension(authed_session, extension_id):
+    await api_request(
+        authed_session, "DELETE", f"extension/{extension_id}/", admin=True
+    )
+
+
 @cli.command("check-extensions")
 @click.option("--jq-query", "-j")
 @server_options
@@ -578,6 +649,10 @@ async def all_extensions(session, jq_query, limit):
 @async_trampoline
 @with_session
 async def check_extensions(session, jq_query):
+    """
+    Check for revisions that reference extension XPIs that don't correspond
+    to any uploaded extension.
+    """
     if jq_query:
         compiled_query = pyjq.compile(jq_query)
 
