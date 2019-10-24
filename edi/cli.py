@@ -136,7 +136,7 @@ def with_session(async_func):
 
 
 def with_authed_session(async_func):
-    @click.option("-A", "--auth", required=True, allow_from_autoenv=True, prompt=True)
+    @click.option("-A", "--auth", required=True, prompt=True, envvar='EDI_AUTH')
     @click_compatible_wraps(async_func)
     async def inner(auth, *args, **kwargs):
         if not auth.lower().startswith("bearer "):
@@ -416,12 +416,20 @@ async def groups(authed_session):
         log.info(group)
 
 
-@cli.command("users")
+
+@cli.group()
+@logging_options
+@server_options
+def users():
+    pass
+
+
+@users.command("list")
 @logging_options
 @server_options
 @async_trampoline
 @with_authed_session
-async def users(authed_session):
+async def list_users(authed_session):
     async for user in paginated_fetch(
         authed_session, "user", admin=True, desc="fetch users"
     ):
@@ -429,7 +437,7 @@ async def users(authed_session):
         log.info(f"{user['id']} - {user['email']} - [{', '.join(groups)}]")
 
 
-@cli.command("whoami")
+@users.command("whoami")
 @logging_options
 @server_options
 @async_trampoline
@@ -438,7 +446,7 @@ async def whoami(authed_session):
     log.info(await api_fetch(authed_session, "user/me", admin=True, version=1))
 
 
-@cli.command("add-user-to-group")
+@users.command("add-to-group")
 @logging_options
 @server_options
 @click.option("--user-id", "-u", required=True, prompt=True, type=click.INT)
@@ -456,7 +464,7 @@ async def add_user_to_group(authed_session, user_id, group_id):
     )
 
 
-@cli.command("add-user")
+@users.command("add")
 @logging_options
 @server_options
 @click.argument("email", required=True)
@@ -475,6 +483,22 @@ async def add_user(authed_session, email, first_name, last_name):
         )
     )
 
+
+@users.command("delete")
+@logging_options
+@server_options
+@click.option("--user-id", "-u", required=True, prompt=True)
+@async_trampoline
+@with_authed_session
+async def add_user(authed_session, user_id):
+    log.info(
+        await api_request(
+            authed_session,
+            "DELETE",
+            f"user/{user_id}/",
+            admin=True,
+        )
+    )
 
 @cli.group()
 @logging_options
@@ -689,6 +713,5 @@ async def check_extensions(session, jq_query):
             log.info(json.dumps(r, indent=True))
 
 
-
 if __name__ == "__main__":
-    cli(auto_envvar_prefix="EDI_")
+    cli(auto_envvar_prefix="EDI")
