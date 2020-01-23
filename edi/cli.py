@@ -11,7 +11,6 @@ import click
 import iso8601
 import pyjq
 from tqdm import tqdm
-from pypeln import asyncio_task as pipeline
 
 
 META_SERVER_KEY = __name__ + ".server"
@@ -162,13 +161,21 @@ def filter_options(func):
     @click.option("--enabled", "-e", is_flag=True, default=None)
     @click.option("--action", "-a")
     @click.option("--creator", "-c")
+    @click.option("--enabled-begin", "-b")
+    @click.option("--enabled-end", "-e")
     @click_compatible_wraps(func)
-    def filter_parser(text, enabled, action, creator, *args, **kwargs):
+    def filter_parser(
+        text, enabled, action, creator, enabled_begin, enabled_end, *args, **kwargs
+    ):
         filters = {
             "text": text,
             "enabled": enabled,
             "action": action,
             "creator": creator,
+            "enabled_begin": iso8601.parse_date(enabled_begin)
+            if enabled_begin
+            else None,
+            "enabled_end": iso8601.parse_date(enabled_end) if enabled_end else None,
         }
         return func(*args, filters=filters, **kwargs)
 
@@ -254,7 +261,15 @@ async def paginated_fetch(
 
 
 async def fetch_recipes(
-    session, *, text=None, enabled=None, action=None, creator=None, limit=None
+    session,
+    *,
+    text=None,
+    enabled=None,
+    action=None,
+    creator=None,
+    limit=None,
+    enabled_begin=None,
+    enabled_end=None,
 ):
     query = {}
     if text is not None:
@@ -276,11 +291,42 @@ async def fetch_recipes(
             ).get("email", "")
             return creator not in approved_creator and creator not in latest_creator
 
+    async def match_enabled_range(recipe):
+        if enabled_begin is None and enabled_end is None:
+            return True
+        rev = recipe["latest_revision"]
+
+        if enabled_begin:
+            # If the latest revision is not enabled and was created before the
+            # start, then it can't be enabled in the range.
+            if (
+                iso8601.parse_date(rev["updated"]) < enabled_begin
+                and not rev["enabled"]
+            ):
+                return False
+
+        # Otherwise fetch the history and check if it was enabled
+        history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
+
+        for rev in history:
+            for enabled_state in rev["enabled_states"]:
+                if enabled_state["enabled"]:
+                    created = iso8601.parse_date(enabled_state["created"])
+                    if (not enabled_begin or created >= enabled_begin) and (
+                        not enabled_end or created < enabled_end
+                    ):
+                        return True
+
+        return False
+
     async for recipe in paginated_fetch(
         session, "recipe", query=query, desc="fetch recipes", limit=limit
     ):
-        if match_creator(recipe):
-            yield recipe
+        if not match_creator(recipe):
+            continue
+        if not await match_enabled_range(recipe):
+            continue
+        yield recipe
 
 
 @cli.command("filter-inputs")
@@ -302,58 +348,6 @@ async def filter_inputs(session, filters):
 
     for (input, count) in all_inputs.most_common():
         log.info(f"{count:>3} {input}")
-
-
-@cli.command("enabled-range")
-@filter_options
-@logging_options
-@server_options
-@click.option("--begin", "-b", required=True, type=Iso8601Param(), prompt=True)
-@click.option("--end", "-e", required=True, type=Iso8601Param(), prompt=True)
-@async_trampoline
-@with_session
-async def enabled_range(session, filters, begin=None, end=None):
-    """Show recipes enabled during a time range"""
-
-    history_progress = tqdm(desc="Rev histories", total=None, leave=False)
-
-    async def potentially_enabled(recipe):
-        rev = recipe["latest_revision"]
-        if iso8601.parse_date(rev["updated"]) < begin and not rev["enabled"]:
-            return False
-        if history_progress.total is None:
-            history_progress.total = 1
-        else:
-            history_progress.total += 1
-        history_progress.update(0)
-        return True
-
-    async def fetch_history(recipe):
-        history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
-        history_progress.update(1)
-        return history
-
-    histories = (
-        fetch_recipes(session, **filters)
-        | pipeline.filter(potentially_enabled)
-        | pipeline.map(fetch_history)
-    )
-
-    # collect all the histories to count
-    _histories = []
-    by_type = defaultdict(lambda: [])
-    async for h in histories:
-        _histories.append(h)
-        rev = h[0]
-        by_type[rev["action"]["name"]].append(h)
-        log.info(f" * {rev['recipe']['id']} - {rev['name']}")
-    histories = _histories
-
-    history_progress.close()
-
-    log.info(f"{len(histories)} recipes active in given range")
-    for action_name, recipes in by_type.items():
-        log.info(f"  * {action_name} - {len(recipes)}")
 
 
 @cli.command("heartbeat-url-scan")
@@ -530,6 +524,32 @@ async def all_recipes(session, filters, jq_query, limit):
             log.info(json.dumps(r, indent=True))
 
 
+@recipes.command("summarize")
+@filter_options
+@logging_options
+@server_options
+@async_trampoline
+@with_session
+async def summarize(session, filters):
+    """Show recipes enabled during a time range"""
+
+    recipes = []
+    async for recipe in fetch_recipes(session, **filters):
+        recipes.append(recipe)
+
+    if not recipes:
+        log.info("No results")
+
+    by_action = defaultdict(lambda: [])
+    for r in recipes:
+        rev = r["approved_revision"] or r["latest_revision"]
+        by_action[rev["action"]["name"]].append(r)
+
+    log.info(f"{len(recipes)} recipes active in given range")
+    for action_name, recipes in by_action.items():
+        log.info(f"  * {action_name} - {len(recipes)}")
+
+
 @recipes.command("get")
 @filter_options
 @logging_options
@@ -613,6 +633,57 @@ async def revise_experiment(authed_session, recipe, data):
         authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True
     )
     log.info(response)
+
+
+@recipes.command("count-filters")
+@filter_options
+@logging_options
+@server_options
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def count_filter(session, filters, limit):
+    recipes = []
+    async for recipe in fetch_recipes(session, **filters, limit=limit):
+        recipes.append(recipe)
+
+    if not recipes:
+        log.info("No results")
+
+    filter_types = Counter()
+
+    for r in recipes:
+        if r.get("approved_revision"):
+            filter_objects = r["approved_revision"]["filter_object"] or []
+            has_extra_filter_expression = bool(
+                r["approved_revision"]["extra_filter_expression"]
+            )
+        elif r.get("latest_revision"):
+            filter_objects = r["latest_revision"]["filter_object"] or []
+            has_extra_filter_expression = bool(
+                r["latest_revision"]["extra_filter_expression"]
+            )
+        else:
+            continue
+
+        for filter_object in filter_objects:
+            filter_types[filter_object.get("type")] += 1
+        if has_extra_filter_expression:
+            filter_types["extra"] += 1
+
+        if not (
+            has_extra_filter_expression
+            or any(fo.get("type") == "bucketSample" for fo in filter_objects)
+            or any(fo.get("type") == "stableSample" for fo in filter_objects)
+        ):
+            filter_types["<no sampling>"] += 1
+
+        if not filter_objects and has_extra_filter_expression:
+            filter_types["<only extra>"] += 1
+
+    for filter_type, count in filter_types.most_common():
+        percent = round(count / len(recipes) * 1000) / 10
+        print(f"{filter_type:<12} {count:>3} ({percent}%)")
 
 
 @cli.group()
