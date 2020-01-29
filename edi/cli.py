@@ -10,6 +10,7 @@ import aiohttp
 import click
 import iso8601
 import pyjq
+from pypeln import asyncio_task as pipeline
 from tqdm import tqdm
 
 
@@ -291,6 +292,8 @@ async def fetch_recipes(
             ).get("email", "")
             return creator not in approved_creator and creator not in latest_creator
 
+    history_bar = None
+
     async def match_enabled_range(recipe):
         if enabled_begin is None and enabled_end is None:
             return True
@@ -305,8 +308,15 @@ async def fetch_recipes(
             ):
                 return False
 
+        nonlocal history_bar
+        if history_bar is None:
+            history_bar = tqdm(desc='fetching histories', total=0)
+
+        history_bar.total += 1
+
         # Otherwise fetch the history and check if it was enabled
         history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
+        history_bar.update(1)
 
         for rev in history:
             for enabled_state in rev["enabled_states"]:
@@ -319,14 +329,16 @@ async def fetch_recipes(
 
         return False
 
-    async for recipe in paginated_fetch(
-        session, "recipe", query=query, desc="fetch recipes", limit=limit
+    # async functions don't support yield from. This is about the same.
+    async for recipe in (
+        paginated_fetch(session, "recipe", query=query, desc="fetch recipes", limit=limit)
+        | pipeline.filter(match_creator)
+        | pipeline.filter(match_enabled_range, workers=16, maxsize=4)
     ):
-        if not match_creator(recipe):
-            continue
-        if not await match_enabled_range(recipe):
-            continue
         yield recipe
+
+    if history_bar:
+        history_bar.close()
 
 
 @cli.command("filter-inputs")
