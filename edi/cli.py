@@ -13,53 +13,9 @@ import pyjq
 from pypeln import asyncio_task as pipeline
 from tqdm import tqdm
 
-
-META_SERVER_KEY = __name__ + ".server"
-
-SERVERS = {
-    "prod": {
-        "public": "https://normandy.cdn.mozilla.net",
-        "admin": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
-    },
-    "stage": {
-        "public": "https://stage.normandy.nonprod.cloudops.mozgcp.net",
-        "admin": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
-    },
-    "dev": {
-        "public": "https://dev.normandy.nonprod.cloudops.mozgcp.net",
-        "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
-    },
-    "prod-admin": {
-        "public": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
-        "admin": "https://prod-admin.normandy.prod.cloudops.mozgcp.net",
-    },
-    "stage-admin": {
-        "public": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
-        "admin": "https://stage-admin.normandy.nonprod.cloudops.mozgcp.net",
-    },
-    "dev-admin": {
-        "public": "https://dev-ademin.normandy.nonprod.cloudops.mozgcp.net",
-        "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
-    },
-    "local": {"public": "https://localhost:8000", "admin": "https://localhost:8000"},
-}
-
-
-class TqdmLoggingHandler(logging.Handler):
-    def emit(self, record):
-        try:
-            msg = self.format(record)
-            tqdm.write(msg)
-            self.flush()
-        except (KeyboardInterrupt, SystemExit):
-            raise
-        except:  # noqa
-            self.handleError(record)
-
-
-log = logging.getLogger(__name__)
-log.addHandler(TqdmLoggingHandler())
-log.setLevel(logging.INFO)
+from .api import api_fetch, api_request, META_SERVER_KEY, SERVERS
+from .log import log
+from .cache import cache
 
 
 def compose(*functions):
@@ -67,55 +23,6 @@ def compose(*functions):
         return lambda x: f(g(x))
 
     return functools.reduce(compose2, functions, lambda x: x)
-
-
-async def api_request(
-    session, verb, endpoint, *, opts=None, data=None, version=3, admin=False
-):
-    if endpoint.startswith("http"):
-        if opts is not None:
-            raise click.ClickException("Can't pass opts with a full url")
-        url = endpoint
-    else:
-        if endpoint.startswith("/"):
-            endpoint = endpoint[1:]
-        if endpoint.endswith("/"):
-            endpoint = endpoint[:-1]
-        if "?" in endpoint:
-            raise click.ClickException("Don't include query string in endpoint")
-        qs = "?" + "&".join(f"{k}={v}" for k, v in opts.items()) if opts else ""
-
-        server_url = click.get_current_context().meta[META_SERVER_KEY][
-            "admin" if admin else "public"
-        ]
-        url = f"{server_url}/api/v{version}/{endpoint}/{qs}"
-
-    if verb in ["GET", "HEAD"] and data is not None:
-        raise Exception("Can't include a body for {verb} requests")
-
-    if data:
-        log.debug(f"{verb} {url} {data}")
-    else:
-        log.debug(f"{verb} {url}")
-    verb_method = getattr(session, verb.lower())
-    async with verb_method(url, data=data) as resp:
-        if resp.status >= 400:
-            raise click.ClickException(
-                f"HTTP Error Code {resp.status}: {await resp.text()}"
-            )
-        if resp.status == 204:
-            return None
-        try:
-            return json.loads(await resp.text())
-        except json.decoder.JSONDecodeError:
-            log.debug(await resp.text())
-            raise
-
-
-async def api_fetch(session, endpoint, opts=None, *, version=3, admin=False):
-    return await api_request(
-        session, "GET", endpoint, opts=opts, version=version, admin=admin
-    )
 
 
 class Iso8601Param(click.ParamType):
@@ -205,12 +112,12 @@ def server_options(func):
     )
     @click.pass_context
     @click_compatible_wraps(func)
-    def logging_wrapper(context, *args, server, verbose=False, **kwargs):
+    def server_wrapper(context, *args, server, verbose=False, **kwargs):
         server_url = SERVERS[server]
         context.meta[META_SERVER_KEY] = server_url
         return func(*args, **kwargs)
 
-    return logging_wrapper
+    return server_wrapper
 
 
 @click.group()
@@ -297,6 +204,12 @@ async def fetch_recipes(
     async def match_enabled_range(recipe):
         if enabled_begin is None and enabled_end is None:
             return True
+
+        nonlocal history_bar
+        if history_bar is None:
+            history_bar = tqdm(desc="fetching histories", total=0)
+        history_bar.total += 1
+
         rev = recipe["latest_revision"]
 
         if enabled_begin:
@@ -306,13 +219,8 @@ async def fetch_recipes(
                 iso8601.parse_date(rev["updated"]) < enabled_begin
                 and not rev["enabled"]
             ):
+                history_bar.update(1)
                 return False
-
-        nonlocal history_bar
-        if history_bar is None:
-            history_bar = tqdm(desc='fetching histories', total=0)
-
-        history_bar.total += 1
 
         # Otherwise fetch the history and check if it was enabled
         history = await api_fetch(session, f"/recipe/{recipe['id']}/history/")
@@ -331,8 +239,10 @@ async def fetch_recipes(
 
     # async functions don't support yield from. This is about the same.
     async for recipe in (
-        paginated_fetch(session, "recipe", query=query, desc="fetch recipes", limit=limit)
-        | pipeline.filter(match_creator)
+        paginated_fetch(
+            session, "recipe", query=query, desc="fetch recipes", limit=limit
+        )
+        | pipeline.filter(match_creator, workers=16, maxsize=4)
         | pipeline.filter(match_enabled_range, workers=16, maxsize=4)
     ):
         yield recipe
@@ -827,5 +737,12 @@ def convert_pref_exp(old_recipe_json, public_name, public_description):
     log.info(("=" * 80) + "\n" + json.dumps(new_recipe, indent=2))
 
 
-if __name__ == "__main__":
+def main():
     cli(auto_envvar_prefix="EDI")
+    raise Exception("huh?")
+    log.info(cache.stats.most_common())
+    cache.write()
+
+
+if __name__ == "__main__":
+    main()

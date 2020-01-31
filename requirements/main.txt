@@ -49,3 +49,7 @@ flake8==3.7.4 \
 pyjq==2.3.1 \
     --hash=sha256:45f7688d8191a4043e7c4839d6cabff8f16abc98fe48c3a4a0cc2da05c62096d \
     --hash=sha256:5f3cd45b856ae4b42a1058d2e91e13d84df5ea188aedc3ae397dc0e01c270db9
+iso8601==0.1.12 \
+    --hash=sha256:210e0134677cc0d02f6028087fee1df1e1d76d372ee1db0bf30bf66c5c1c89a3 \
+    --hash=sha256:49c4b20e1f38aa5cf109ddcd39647ac419f928512c869dc01d5c7098eddede82 \
+    --hash=sha256:bbbae5fb4a7abfe71d4688fd64bff70b91bbd74ef6a99d964bab18f7fdf286dd

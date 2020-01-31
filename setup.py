@@ -15,5 +15,5 @@ setup(
         "pypeln",
         "pyjq",
     ],
-    entry_points={"console_scripts": ["edi = edi.cli:cli"]},
+    entry_points={"console_scripts": ["edi = edi.cli:main"]},
 )
