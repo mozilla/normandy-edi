@@ -133,3 +133,7 @@ pyflakes==2.1.0 \
 entrypoints==0.3 \
     --hash=sha256:589f874b313739ad35be6e0cd7efde2a4e9b6fea91edcc34e58ecbb8dbe56d19 \
     --hash=sha256:c70dd71abe5a8c85e55e12c19bd91ccfeec11a6e99044204511f9ed547d48451
+parsimonious==0.8.1 \
+    --hash=sha256:3add338892d580e0cb3b1a39e4a1b427ff9f687858fdd61097053742391a9f6b
+future==0.18.2 \
+    --hash=sha256:b1bead90b70cf6ec3f0710ae53a525360fa360d306a86583adc6bf83a4db537d

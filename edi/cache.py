@@ -44,9 +44,12 @@ class Cache(object):
         if self._cache_data is None:
             return
 
+        to_remove = set()
         for key, entry in self._cache_data.items():
             if is_timed_out(entry):
-                del self._cache_data[key]
+                to_remove.add(key)
+        for key in to_remove:
+            del self._cache_data[key]
 
         with open(CACHE_PATH, "w") as f:
             json.dump(self._cache_data, f)

@@ -2,6 +2,7 @@ import asyncio
 import functools
 import json
 import logging
+import math
 import re
 import sys
 from collections import Counter, defaultdict
@@ -13,6 +14,7 @@ import pyjq
 from pypeln import asyncio_task as pipeline
 from tqdm import tqdm
 
+from . import jexlutils
 from .api import api_fetch, api_request, META_SERVER_KEY, SERVERS
 from .log import log
 from .cache import cache
@@ -603,9 +605,56 @@ async def count_filter(session, filters, limit):
         if not filter_objects and has_extra_filter_expression:
             filter_types["<only extra>"] += 1
 
+    log.info(f"{len(recipes)} total recipes")
     for filter_type, count in filter_types.most_common():
         percent = round(count / len(recipes) * 1000) / 10
-        print(f"{filter_type:<12} {count:>3} ({percent}%)")
+        log.info(f"  - {filter_type:<12} {count:>3} ({percent}%)")
+
+
+@recipes.command("classify-filters")
+@filter_options
+@logging_options
+@server_options
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def classify_recipe_filters(session, limit, filters):
+    recipes = []
+    async for recipe in fetch_recipes(session, **filters, limit=limit):
+        recipes.append(recipe)
+
+    filter_classifications = Counter()
+
+    count = 0
+    for recipe in recipes:
+        rev = recipe["approved_revision"] or recipe["latest_revision"]
+        if not rev.get("extra_filter_expression"):
+            continue
+        count += 1
+        for classification in jexlutils.classify_filter(rev["extra_filter_expression"]):
+            filter_classifications[classification] += 1
+
+    if not recipes:
+        log.info("No recipes to analyze")
+        return
+
+    percent = round(count / len(recipes) * 1000) / 10
+    log.info(
+        f"Of {len(recipes)} recipes, {count} ({percent}%)have extra filter expression"
+    )
+
+    max_classification_width = max(len(c) for c in filter_classifications.keys())
+    max_digit_width = math.ceil(
+        max(math.log(c) for c in filter_classifications.values()) / math.log(10)
+    )
+    format_string = " - {:<%s}  {:>%s} ({:>4}%%)" % (
+        max_classification_width,
+        max_digit_width,
+    )
+
+    for classification, count in filter_classifications.most_common():
+        percent = round(count / len(recipes) * 1000) / 10
+        log.info(format_string.format(classification, count, percent))
 
 
 @cli.group()
@@ -685,7 +734,7 @@ async def check_extensions(session, jq_query):
             if revision["action"]["name"] != "opt-out-study":
                 continue
         except Exception:
-            print("revision=", revision)
+            log.info("revision=", revision)
 
         addon_filename = revision["arguments"]["addonUrl"].split("/")[-1]
         if addon_filename not in extension_filenames:
@@ -738,10 +787,11 @@ def convert_pref_exp(old_recipe_json, public_name, public_description):
 
 
 def main():
-    cli(auto_envvar_prefix="EDI")
-    raise Exception("huh?")
-    log.info(cache.stats.most_common())
-    cache.write()
+    try:
+        cli(auto_envvar_prefix="EDI")
+    finally:
+        log.debug(f"Cache info: {cache.stats.most_common()}")
+        cache.write()
 
 
 if __name__ == "__main__":
