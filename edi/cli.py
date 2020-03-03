@@ -652,7 +652,7 @@ async def classify_recipe_filters(session, limit, filters):
         max_digit_width,
     )
 
-    for classification, count in filter_classifications.most_common():
+    for classification, count in sorted(filter_classifications.most_common(), key=lambda v: (-v[1], v[0]) ):
         percent = round(count / len(recipes) * 1000) / 10
         log.info(format_string.format(classification, count, percent))
 

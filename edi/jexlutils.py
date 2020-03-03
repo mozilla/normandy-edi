@@ -8,14 +8,14 @@ from .log import log
 def classify_filter(filter_expr):
     jexl = JEXL()
     classifications = jexl.analyze(filter_expr, FilterExpressionAnalyzer)
-    if "unknown" in classifications:
-        log.info(">>>\n", filter_expr, "\n<<<")
+    if {"unclassified", "not-unclassified"} & classifications:
+        log.info(f"Unclassified filter: ({sorted(classifications)!r})\n>>>\n{filter_expr}\n<<<")
     return classifications
 
 
 class FilterExpressionAnalyzer(JEXLAnalyzer):
     def generic_visit(self, expression):
-        log.info("Unknown expression", expression)
+        log.info(f"Unknown expression {expression}")
         return {"unknown"}
 
     def visit_Literal(self, expression):
@@ -37,6 +37,19 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
                 return set(c for c in classifications if c != "always")
 
         elif expression.operator.symbol == "||":
+            for side, other in [[expression.left, expression.right], [expression.right, expression.left]]:
+                if isinstance(expression.right, (parser.Identifier, parser.FilterExpression)):
+                    path, classifications = id_to_context_path(expression.right)
+                    if path[0] == "studies":
+                        return classifications | self.visit(other) | {"sticky"}
+                elif (isinstance(side, parser.BinaryExpression)
+                        and side.operator.symbol == "in"
+                        and isinstance(side.right, (parser.Identifier, parser.FilterExpression))):
+                    path, classifications = id_to_context_path(side.right)
+                    if path[0] == "experiments" and path[1] in ["all", "active"]:
+                        return classifications | self.visit(other) | {"old-sticky"}
+
+            log.info(f"Unclassified or: {expression}")
             return {"unclassified", "unclassified-or"}
 
         elif expression.operator.symbol == "==":
@@ -49,6 +62,11 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
                         return classifications | {key}
                 if path[0] == "telemetry":
                     return classifications | {"unclassified", "unclassified-telemetry"}
+                if path[0] == "attribution":
+                    if path[1:] == ["ua"]:
+                        classifications |= {"attribution-ua"}
+                    return classifications | {"attribution"}
+
             elif isinstance(expression.left, parser.Transform) and isinstance(
                 expression.right, parser.Literal
             ):
@@ -57,23 +75,33 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
                 elif expression.left.name == "preferenceExists":
                     return {"preference-exists"}
 
-            # log.info(f"Unclassified equality: {expression}")
+            log.info(f"Unclassified equality: {expression}")
             return {"unclassified", "unclassified-equality"}
 
         elif expression.operator.symbol == "!=":
             return {"unclassified", "unclassified-ne"}
 
         elif expression.operator.symbol in [">=", ">", "<", "<="]:
-            if isinstance(expression.left, parser.Identifier) and isinstance(
-                expression.right, parser.Literal
-            ):
+            if isinstance(expression.left, parser.Identifier):
                 path, classifications = id_to_context_path(expression.left)
-                if path == "version":
+                if path == ["version"]  and isinstance(expression.right, parser.Literal):
                     return classifications | {"version"}
+
+                elif path == ["telemetry", "main", "environment", "profile", "creationDate"]:
+                    return classifications | {"pcd"}
+
+                elif path == ["os", "windowsBuildNumber"]:
+                    return classifications | {"windows-build-number"}
+
+                elif path == ["telemetry", "main", "application", "buildId"]:
+                    return classifications | {"old-buildid"}
+
                 return classifications | {
                     "unclassified",
                     "unclassified-simple-comparison",
                 }
+
+            log.info(f"Unclassified comparison {expression.operator.symbol}: {expression}")
             return {"unclassified", "unclassified-cmp"}
 
         elif expression.operator.symbol == "in":
@@ -142,6 +170,8 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
             return classifications | {"unclassified", "unclassified-telemetry"}
         elif path == ["isFirstRun"]:
             return classifications | {"first-run"}
+        elif path in [["os", "isWindows"], ["os", "isMac"], ["os", "isLinux"]]:
+            return classifications | {"simple-os"}
         else:
             return classifications | {"unclassified", "unclassified-context"}
 
