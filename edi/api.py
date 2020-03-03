@@ -78,6 +78,7 @@ async def api_request(
         log.debug(f"{verb} {url}")
 
     resp_data = None
+    cache_key = None
     if cache and verb in ["GET", "HEAD"]:
         cache_key = f"api_request:{verb}:{url}"
         resp_data = cache.get(cache_key)
@@ -90,7 +91,7 @@ async def api_request(
         verb_method = getattr(session, verb.lower())
         async with verb_method(url, data=data) as resp:
             resp_data = {"status": resp.status, "text": await resp.text()}
-            if cache and cache_key:
+            if verb in ["GET", "HEAD"] and cache and cache_key:
                 # TODO use real cache timeout / ignore uncacheable
                 cache.set(cache_key, resp_data, timeout=300)
 
