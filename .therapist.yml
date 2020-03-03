@@ -8,6 +8,12 @@ actions:
     run: flake8 {files}
     include: "*.py"
 
+  poetry-check:
+    run: poetry check
+    include:
+      - poetry.lock
+      - pyproject.toml
+
 shortcuts:
   lint:
     flags:

@@ -1,0 +1,32 @@
+[tool.poetry]
+name = "normandy-edi"
+version = "0.2.0"
+description = "Normandy API helper"
+authors = ["Michael Cooper <mcooper@mozilla.com>"]
+license = "MIT"
+packages = [{ include = "edi" }]
+
+[tool.poetry.scripts]
+edi = "edi.cli:main"
+
+[tool.poetry.dependencies]
+python = "^3.8"
+click = "^6.7"
+colorama = "^0.3.9"
+aiohttp = "^3.4.4"
+tqdm = "^4.27.0"
+aiodns = "^1.1.1"
+pypeln = "^0.1.4"
+pyjq = "^2.3.1"
+iso8601 = "^0.1.12"
+pyjexl = "^0.2.3"
+
+[tool.poetry.dev-dependencies]
+black = "^18.9b0"
+pylint = "^2.1.1"
+flake8 = "^3.7.4"
+therapist = "^2.0.0"
+
+[build-system]
+requires = ["poetry>=0.12"]
+build-backend = "poetry.masonry.api"
