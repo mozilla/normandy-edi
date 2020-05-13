@@ -6,6 +6,9 @@ from .cache import cache
 from .log import log
 
 
+TRACE = 5
+
+
 META_SERVER_KEY = __name__ + ".server"
 
 SERVERS = {
@@ -34,11 +37,12 @@ SERVERS = {
         "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
     },
     "local": {"public": "https://localhost:8000", "admin": "https://localhost:8000"},
+    "requestbin": {"public": "http://requestbin.net/r/sb02oasb", "admin": "http://requestbin.net/r/sb02oasb"},
 }
 
 
 async def api_request(
-    session, verb, endpoint, *, opts=None, data=None, version=3, admin=False
+    session, verb, endpoint, *, opts=None, data=None, version=3, admin=False, headers=None
 ):
     """
     :param session: The asyncio session to work in
@@ -73,9 +77,9 @@ async def api_request(
         raise Exception("Can't include a body for {verb} requests")
 
     if data:
-        log.debug(f"{verb} {url} {data}")
+        log.log(TRACE, f"{verb} {url} {data}")
     else:
-        log.debug(f"{verb} {url}")
+        log.log(TRACE, f"{verb} {url}")
 
     resp_data = None
     cache_key = None
@@ -83,13 +87,13 @@ async def api_request(
         cache_key = f"api_request:{verb}:{url}"
         resp_data = cache.get(cache_key)
         if resp_data is not None:
-            log.debug(f"Cache HIT  {cache_key}")
+            log.log(TRACE, f"Cache HIT  {cache_key}")
         else:
-            log.debug(f"Cache MISS {cache_key}")
+            log.log(TRACE, f"Cache MISS {cache_key}")
 
     if resp_data is None:
         verb_method = getattr(session, verb.lower())
-        async with verb_method(url, data=data) as resp:
+        async with verb_method(url, json=data, headers=headers) as resp:
             resp_data = {"status": resp.status, "text": await resp.text()}
             if verb in ["GET", "HEAD"] and cache and cache_key:
                 # TODO use real cache timeout / ignore uncacheable
@@ -106,11 +110,11 @@ async def api_request(
     try:
         return json.loads(resp_data["text"])
     except json.decoder.JSONDecodeError:
-        log.debug(resp_data["text"])
+        log.error(resp_data["text"])
         raise
 
 
-async def api_fetch(session, endpoint, opts=None, *, version=3, admin=False):
+async def api_fetch(session, endpoint, opts=None, *, version=3, admin=False, headers=None):
     return await api_request(
-        session, "GET", endpoint, opts=opts, version=version, admin=admin
+        session, "GET", endpoint, opts=opts, version=version, admin=admin, headers=headers,
     )

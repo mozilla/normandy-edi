@@ -9,7 +9,7 @@ def classify_filter(filter_expr):
     jexl = JEXL()
     classifications = jexl.analyze(filter_expr, FilterExpressionAnalyzer)
     if {"unclassified", "not-unclassified"} & classifications:
-        log.info(f"Unclassified filter: ({sorted(classifications)!r})\n>>>\n{filter_expr}\n<<<")
+        log.info(f"Unclassified filter: ({sorted(classifications)!r})\n<<<\n{filter_expr}\n>>>\n")
     return classifications
 
 

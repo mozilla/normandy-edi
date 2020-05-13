@@ -4,12 +4,14 @@ import json
 import logging
 import math
 import re
+import ssl
 import sys
 from collections import Counter, defaultdict
 
 import aiohttp
 import click
 import iso8601
+import jsonschema
 import pyjq
 from pypeln import asyncio_task as pipeline
 from tqdm import tqdm
@@ -35,23 +37,33 @@ class Iso8601Param(click.ParamType):
             self.fail(str(e), param, ctx)
 
 
+def _make_httpio_session(*, cert=None, **kwargs):
+    ssl_context = ssl.create_default_context()
+    if cert:
+        ssl_context.load_verify_locations(cert)
+    connector = aiohttp.TCPConnector(ssl=ssl_context)
+    return aiohttp.ClientSession(connector=connector, **kwargs)
+
+
 def with_session(async_func):
+    @click.option("--cert")
     @click_compatible_wraps(async_func)
-    async def inner(*args, **kwargs):
-        async with aiohttp.ClientSession() as session:
+    async def inner(cert, *args, **kwargs):
+        async with _make_httpio_session(cert=cert) as session:
             return await async_func(*args, session=session, **kwargs)
 
     return inner
 
 
 def with_authed_session(async_func):
+    @click.option("--cert")
     @click.option("-A", "--auth", required=True, prompt=True, envvar="EDI_AUTH")
     @click_compatible_wraps(async_func)
-    async def inner(auth, *args, **kwargs):
-        if not auth.lower().startswith("bearer "):
+    async def inner(cert, auth, *args, **kwargs):
+        if ' ' not in auth:
             auth = "Bearer " + auth
         headers = {"Authorization": auth}
-        async with aiohttp.ClientSession(headers=headers) as authed_session:
+        async with _make_httpio_session(cert=cert, headers=headers) as authed_session:
             return await async_func(*args, authed_session=authed_session, **kwargs)
 
     return inner
@@ -93,11 +105,15 @@ def filter_options(func):
 
 
 def logging_options(func):
-    @click.option("--verbose", "-v", is_flag=True)
+    @click.option("--verbose", "-v", is_flag=True, multiple=True)
     @click_compatible_wraps(func)
     def logging_wrapper(*args, verbose=False, **kwargs):
-        if verbose:
+        if len(verbose) == 1:
+            print("log level DEBUG")
             log.setLevel(logging.DEBUG)
+        elif len(verbose) > 1:
+            print("log level TRACE")
+            log.setLevel(logging.DEBUG - 5)
         return func(*args, **kwargs)
 
     return logging_wrapper
@@ -107,9 +123,7 @@ def server_options(func):
     @click.option(
         "--server",
         "-s",
-        type=click.Choice(
-            ["prod", "stage", "dev", "local", "prod-admin", "stage-admin", "dev-admin"]
-        ),
+        type=click.Choice( SERVERS.keys()),
         default="prod",
     )
     @click.pass_context
@@ -544,6 +558,20 @@ async def delete_recipes(authed_session, recipe_ids):
         await api_request(authed_session, "DELETE", f"recipe/{recipe_id}/", admin=True)
 
 
+@recipes.command("create")
+@logging_options
+@server_options
+@click.argument("data", type=str, required=True)
+@async_trampoline
+@with_authed_session
+async def create_recipe(authed_session, data):
+    data = json.loads(data)
+    response = await api_request(
+        authed_session, "POST", "recipe/", data=data, admin=True, headers={"Content-Type": "application/json"}
+    )
+    log.info(response)
+
+
 @recipes.command("revise")
 @logging_options
 @server_options
@@ -551,10 +579,10 @@ async def delete_recipes(authed_session, recipe_ids):
 @click.argument("data", type=str, required=True)
 @async_trampoline
 @with_authed_session
-async def revise_experiment(authed_session, recipe, data):
+async def revise_recipe(authed_session, recipe, data):
     data = json.loads(data)
     response = await api_request(
-        authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True
+        authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True, headers={"Content-Type": "application/json"}
     )
     log.info(response)
 
@@ -567,6 +595,7 @@ async def revise_experiment(authed_session, recipe, data):
 @async_trampoline
 @with_session
 async def count_filter(session, filters, limit):
+    """Count the usage of filter object types"""
     recipes = []
     async for recipe in fetch_recipes(session, **filters, limit=limit):
         recipes.append(recipe)
@@ -619,6 +648,9 @@ async def count_filter(session, filters, limit):
 @async_trampoline
 @with_session
 async def classify_recipe_filters(session, limit, filters):
+    """
+    Analyze filter expressions to look for common patterns
+    """
     recipes = []
     async for recipe in fetch_recipes(session, **filters, limit=limit):
         recipes.append(recipe)
@@ -655,6 +687,48 @@ async def classify_recipe_filters(session, limit, filters):
     for classification, count in sorted(filter_classifications.most_common(), key=lambda v: (-v[1], v[0]) ):
         percent = round(count / len(recipes) * 1000) / 10
         log.info(format_string.format(classification, count, percent))
+
+
+@recipes.command("check-argument-schemas")
+@filter_options
+@logging_options
+@server_options
+@click.option("--limit", "-l", type=int)
+@async_trampoline
+@with_session
+async def recipes_check_argument_schemas(session, limit, filters):
+    """
+    Check if recipe arguments match their schemas
+    """
+    stats = Counter()
+
+    async for recipe in fetch_recipes(session, **filters, limit=limit):
+        stats['total'] += 1
+        revision = recipe['approved_revision'] or recipe['latest_revision']
+        arguments = revision['arguments']
+        schema = revision['action']['arguments_schema']
+        action_name = revision['action']['name']
+
+        try:
+            jsonschema.validate(arguments, schema)
+            stats['ok'] += 1
+            stats[f'ok::{action_name}'] += 1
+        except jsonschema.exceptions.ValidationError as err:
+            stats['error'] += 1
+            stats[f'error::{action_name}'] += 1
+            log.warn(f"{action_name} recipe {recipe['id']} doesn't match schema")
+            log.debug(f'\t{err.message}')
+
+    keys = sorted([k for k in stats.keys() if k != 'total'])
+    keys.insert(0, 'total')
+    max_key_length = max(len(k) for k in keys)
+    max_val_length = max(len(str(v)) for v in stats.values())
+    format_str = '{key:<%i}  {val:>%i}' % (max_key_length, max_val_length)
+
+    for key in keys:
+        log.info(format_str.format(key=key, val=stats[key]))
+
+
 
 
 @cli.group()
@@ -788,7 +862,7 @@ def convert_pref_exp(old_recipe_json, public_name, public_description):
 
 def main():
     try:
-        cli(auto_envvar_prefix="EDI")
+        cli()
     finally:
         log.debug(f"Cache info: {cache.stats.most_common()}")
         cache.write()

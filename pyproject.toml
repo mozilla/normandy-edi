@@ -20,6 +20,7 @@ pypeln = "^0.1.4"
 pyjq = "^2.3.1"
 iso8601 = "^0.1.12"
 pyjexl = "^0.2.3"
+jsonschema = "^3.2.0"
 
 [tool.poetry.dev-dependencies]
 black = "^18.9b0"
