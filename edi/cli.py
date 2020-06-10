@@ -60,7 +60,7 @@ def with_authed_session(async_func):
     @click.option("-A", "--auth", required=True, prompt=True, envvar="EDI_AUTH")
     @click_compatible_wraps(async_func)
     async def inner(cert, auth, *args, **kwargs):
-        if ' ' not in auth:
+        if " " not in auth:
             auth = "Bearer " + auth
         headers = {"Authorization": auth}
         async with _make_httpio_session(cert=cert, headers=headers) as authed_session:
@@ -120,12 +120,7 @@ def logging_options(func):
 
 
 def server_options(func):
-    @click.option(
-        "--server",
-        "-s",
-        type=click.Choice( SERVERS.keys()),
-        default="prod",
-    )
+    @click.option("--server", "-s", type=click.Choice(SERVERS.keys()), default="prod")
     @click.pass_context
     @click_compatible_wraps(func)
     def server_wrapper(context, *args, server, verbose=False, **kwargs):
@@ -567,7 +562,12 @@ async def delete_recipes(authed_session, recipe_ids):
 async def create_recipe(authed_session, data):
     data = json.loads(data)
     response = await api_request(
-        authed_session, "POST", "recipe/", data=data, admin=True, headers={"Content-Type": "application/json"}
+        authed_session,
+        "POST",
+        "recipe/",
+        data=data,
+        admin=True,
+        headers={"Content-Type": "application/json"},
     )
     log.info(response)
 
@@ -582,7 +582,12 @@ async def create_recipe(authed_session, data):
 async def revise_recipe(authed_session, recipe, data):
     data = json.loads(data)
     response = await api_request(
-        authed_session, "PATCH", f"recipe/{recipe}/", data=data, admin=True, headers={"Content-Type": "application/json"}
+        authed_session,
+        "PATCH",
+        f"recipe/{recipe}/",
+        data=data,
+        admin=True,
+        headers={"Content-Type": "application/json"},
     )
     log.info(response)
 
@@ -684,7 +689,9 @@ async def classify_recipe_filters(session, limit, filters):
         max_digit_width,
     )
 
-    for classification, count in sorted(filter_classifications.most_common(), key=lambda v: (-v[1], v[0]) ):
+    for classification, count in sorted(
+        filter_classifications.most_common(), key=lambda v: (-v[1], v[0])
+    ):
         percent = round(count / len(recipes) * 1000) / 10
         log.info(format_string.format(classification, count, percent))
 
@@ -703,32 +710,30 @@ async def recipes_check_argument_schemas(session, limit, filters):
     stats = Counter()
 
     async for recipe in fetch_recipes(session, **filters, limit=limit):
-        stats['total'] += 1
-        revision = recipe['approved_revision'] or recipe['latest_revision']
-        arguments = revision['arguments']
-        schema = revision['action']['arguments_schema']
-        action_name = revision['action']['name']
+        stats["total"] += 1
+        revision = recipe["approved_revision"] or recipe["latest_revision"]
+        arguments = revision["arguments"]
+        schema = revision["action"]["arguments_schema"]
+        action_name = revision["action"]["name"]
 
         try:
             jsonschema.validate(arguments, schema)
-            stats['ok'] += 1
-            stats[f'ok::{action_name}'] += 1
+            stats["ok"] += 1
+            stats[f"ok::{action_name}"] += 1
         except jsonschema.exceptions.ValidationError as err:
-            stats['error'] += 1
-            stats[f'error::{action_name}'] += 1
+            stats["error"] += 1
+            stats[f"error::{action_name}"] += 1
             log.warn(f"{action_name} recipe {recipe['id']} doesn't match schema")
-            log.debug(f'\t{err.message}')
+            log.debug(f"\t{err.message}")
 
-    keys = sorted([k for k in stats.keys() if k != 'total'])
-    keys.insert(0, 'total')
+    keys = sorted([k for k in stats.keys() if k != "total"])
+    keys.insert(0, "total")
     max_key_length = max(len(k) for k in keys)
     max_val_length = max(len(str(v)) for v in stats.values())
-    format_str = '{key:<%i}  {val:>%i}' % (max_key_length, max_val_length)
+    format_str = "{key:<%i}  {val:>%i}" % (max_key_length, max_val_length)
 
     for key in keys:
         log.info(format_str.format(key=key, val=stats[key]))
-
-
 
 
 @cli.group()
@@ -858,6 +863,98 @@ def convert_pref_exp(old_recipe_json, public_name, public_description):
         )
 
     log.info(("=" * 80) + "\n" + json.dumps(new_recipe, indent=2))
+
+
+@cli.command("fix-is-enrollment-paused")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+async def revise_recipe_arguments(authed_session):
+    async def patch(recipe, base_revision):
+        new_arguments = {**base_revision["arguments"], "isEnrollmentPaused": False}
+        log.info(f"Recipe {recipe['id']} will be patched")
+        await api_request(
+            authed_session,
+            "PATCH",
+            f"recipe/{recipe['id']}/",
+            data={
+                "arguments": new_arguments,
+                "comment": "mass edit to fix isEnrollmentPaused missing",
+            },
+            admin=True,
+            headers={"Content-Type": "application/json"},
+        )
+
+    service_info = await api_request(authed_session, "GET", "service_info/", admin=True)
+    peer_approval_enforced = service_info["peer_approval_enforced"]
+
+    async for recipe in fetch_recipes(
+        authed_session, action="multi-preference-experiment"
+    ):
+        approved = recipe["approved_revision"]
+        latest = recipe["latest_revision"]
+
+        if approved and approved["id"] == latest["id"]:
+            # Approved is latest, this is easy
+            if "isEnrollmentPaused" in approved["arguments"]:
+                # Nothing to do here
+                log.debug(f"Recipe {recipe['id']} has isEnrollmentPaused")
+                continue
+            else:
+                await patch(recipe, approved)
+
+        elif not approved:
+            # Not approved, easy
+            patch(recipe, latest)
+        else:
+            # This will be harder
+            if "isEnrollmentPaused" in latest["arguments"]:
+                if "isEnrollmentPaused" in approved["arguments"]:
+                    log.debug(f"Recipe {recipe['id']} has isEnrollmentPaused")
+                else:
+                    approval_id = None
+                    if latest["approval_request"]:
+                        approval_id = latest["approval_request"]["id"]
+                        if peer_approval_enforced:
+                            log.info(
+                                f"Recipe {recipe['id']} needs review: ext+normandy://prod/recipes/{recipe['id']}"
+                            )
+                    else:
+                        approval_request = await api_request(
+                            authed_session,
+                            "POST",
+                            f"recipe_revision/{latest['id']}/request_approval/",
+                            admin=True,
+                        )
+                        approval_id = approval_request["id"]
+                        if peer_approval_enforced:
+                            log.info(
+                                f"Recipe {recipe['id']} requested review: ext+normandy://prod/recipes/{recipe['id']}"
+                            )
+
+                    if not peer_approval_enforced:
+                        await api_request(
+                            authed_session,
+                            "POST",
+                            f"approval_request/{approval_id}/approve/",
+                            admin=True,
+                            data={
+                                "comment": "mass approved for isEnrollmentPaused fix"
+                            },
+                            headers={"Content-Type": "application/json"},
+                        )
+                        log.info(f"Recipe {recipe['id']} self-approved")
+
+            else:
+                if "isEnrollmentPaused" in approved["arguments"]:
+                    log.warn(
+                        f"Recipe {recipe['id']} has draft that regress isEnrollmentPaused and needs manual work ext+normandy://prod/recipes/{recipe['id']}"
+                    )
+                else:
+                    log.info(
+                        f"Recipe {recipe['id']} has a draft and needs manual work ext+normandy://prod/recipes/{recipe['id']}"
+                    )
 
 
 def main():
