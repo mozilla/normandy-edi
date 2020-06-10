@@ -86,17 +86,13 @@ def filter_options(func):
     @click.option("--enabled-begin", "-b")
     @click.option("--enabled-end", "-e")
     @click_compatible_wraps(func)
-    def filter_parser(
-        text, enabled, action, creator, enabled_begin, enabled_end, *args, **kwargs
-    ):
+    def filter_parser(text, enabled, action, creator, enabled_begin, enabled_end, *args, **kwargs):
         filters = {
             "text": text,
             "enabled": enabled,
             "action": action,
             "creator": creator,
-            "enabled_begin": iso8601.parse_date(enabled_begin)
-            if enabled_begin
-            else None,
+            "enabled_begin": iso8601.parse_date(enabled_begin) if enabled_begin else None,
             "enabled_end": iso8601.parse_date(enabled_end) if enabled_end else None,
         }
         return func(*args, filters=filters, **kwargs)
@@ -150,9 +146,7 @@ def async_trampoline(async_func):
     return sync_func
 
 
-async def paginated_fetch(
-    session, endpoint, *, query=None, admin=False, desc="fetch", limit=None
-):
+async def paginated_fetch(session, endpoint, *, query=None, admin=False, desc="fetch", limit=None):
     count = 0
     with tqdm(desc=desc, total=limit) as progress_bar:
         data = await api_fetch(session, endpoint, query, admin=admin)
@@ -202,12 +196,12 @@ async def fetch_recipes(
         if creator is None:
             return True
         else:
-            approved_creator = (
-                recipe.get("latest_revision", {}).get("creator", {}) or {}
-            ).get("email", "")
-            latest_creator = (
-                recipe.get("latest_revision", {}).get("creator", {}) or {}
-            ).get("email", "")
+            approved_creator = (recipe.get("latest_revision", {}).get("creator", {}) or {}).get(
+                "email", ""
+            )
+            latest_creator = (recipe.get("latest_revision", {}).get("creator", {}) or {}).get(
+                "email", ""
+            )
             return creator not in approved_creator and creator not in latest_creator
 
     history_bar = None
@@ -226,10 +220,7 @@ async def fetch_recipes(
         if enabled_begin:
             # If the latest revision is not enabled and was created before the
             # start, then it can't be enabled in the range.
-            if (
-                iso8601.parse_date(rev["updated"]) < enabled_begin
-                and not rev["enabled"]
-            ):
+            if iso8601.parse_date(rev["updated"]) < enabled_begin and not rev["enabled"]:
                 history_bar.update(1)
                 return False
 
@@ -250,9 +241,7 @@ async def fetch_recipes(
 
     # async functions don't support yield from. This is about the same.
     async for recipe in (
-        paginated_fetch(
-            session, "recipe", query=query, desc="fetch recipes", limit=limit
-        )
+        paginated_fetch(session, "recipe", query=query, desc="fetch recipes", limit=limit)
         | pipeline.filter(match_creator, workers=16, maxsize=4)
         | pipeline.filter(match_enabled_range, workers=16, maxsize=4)
     ):
@@ -337,9 +326,7 @@ async def slugs(session, filters):
 @async_trampoline
 @with_authed_session
 async def groups(authed_session):
-    async for group in paginated_fetch(
-        authed_session, "group", admin=True, desc="fetch groups"
-    ):
+    async for group in paginated_fetch(authed_session, "group", admin=True, desc="fetch groups"):
         log.info(group)
 
 
@@ -356,9 +343,7 @@ def users():
 @async_trampoline
 @with_authed_session
 async def list_users(authed_session):
-    async for user in paginated_fetch(
-        authed_session, "user", admin=True, desc="fetch users"
-    ):
+    async for user in paginated_fetch(authed_session, "user", admin=True, desc="fetch users"):
         groups = [g["name"] for g in user["groups"]]
         log.info(f"{user['id']} - {user['email']} - [{', '.join(groups)}]")
 
@@ -382,11 +367,7 @@ async def whoami(authed_session):
 async def add_user_to_group(authed_session, user_id, group_id):
     log.debug(f"user_id: {user_id!r}")
     await api_request(
-        authed_session,
-        "POST",
-        f"group/{group_id}/add_user",
-        data={"user_id": user_id},
-        admin=True,
+        authed_session, "POST", f"group/{group_id}/add_user", data={"user_id": user_id}, admin=True
     )
 
 
@@ -417,9 +398,7 @@ async def add_user(authed_session, email, first_name, last_name):
 @async_trampoline
 @with_authed_session
 async def delete_user(authed_session, user_id):
-    log.info(
-        await api_request(authed_session, "DELETE", f"user/{user_id}/", admin=True)
-    )
+    log.info(await api_request(authed_session, "DELETE", f"user/{user_id}/", admin=True))
 
 
 @cli.group()
@@ -543,9 +522,7 @@ async def empty_recipes(session, filters, jq_query, limit):
 @recipes.command("delete")
 @logging_options
 @server_options
-@click.argument(
-    "recipe_ids", type=int, nargs=-1, required=True
-)  # any number of recipe ids
+@click.argument("recipe_ids", type=int, nargs=-1, required=True)  # any number of recipe ids
 @async_trampoline
 @with_authed_session
 async def delete_recipes(authed_session, recipe_ids):
@@ -613,14 +590,10 @@ async def count_filter(session, filters, limit):
     for r in recipes:
         if r.get("approved_revision"):
             filter_objects = r["approved_revision"]["filter_object"] or []
-            has_extra_filter_expression = bool(
-                r["approved_revision"]["extra_filter_expression"]
-            )
+            has_extra_filter_expression = bool(r["approved_revision"]["extra_filter_expression"])
         elif r.get("latest_revision"):
             filter_objects = r["latest_revision"]["filter_object"] or []
-            has_extra_filter_expression = bool(
-                r["latest_revision"]["extra_filter_expression"]
-            )
+            has_extra_filter_expression = bool(r["latest_revision"]["extra_filter_expression"])
         else:
             continue
 
@@ -676,18 +649,13 @@ async def classify_recipe_filters(session, limit, filters):
         return
 
     percent = round(count / len(recipes) * 1000) / 10
-    log.info(
-        f"Of {len(recipes)} recipes, {count} ({percent}%)have extra filter expression"
-    )
+    log.info(f"Of {len(recipes)} recipes, {count} ({percent}%)have extra filter expression")
 
     max_classification_width = max(len(c) for c in filter_classifications.keys())
     max_digit_width = math.ceil(
         max(math.log(c) for c in filter_classifications.values()) / math.log(10)
     )
-    format_string = " - {:<%s}  {:>%s} ({:>4}%%)" % (
-        max_classification_width,
-        max_digit_width,
-    )
+    format_string = " - {:<%s}  {:>%s} ({:>4}%%)" % (max_classification_width, max_digit_width)
 
     for classification, count in sorted(
         filter_classifications.most_common(), key=lambda v: (-v[1], v[0])
@@ -780,9 +748,7 @@ async def all_extensions(session, jq_query, limit):
 @async_trampoline
 @with_authed_session
 async def delete_extension(authed_session, extension_id):
-    await api_request(
-        authed_session, "DELETE", f"extension/{extension_id}/", admin=True
-    )
+    await api_request(authed_session, "DELETE", f"extension/{extension_id}/", admin=True)
 
 
 @cli.command("check-extensions")
@@ -800,15 +766,11 @@ async def check_extensions(session, jq_query):
         compiled_query = pyjq.compile(jq_query)
 
     extension_filenames = set()
-    async for extension in paginated_fetch(
-        session, "extension", desc="fetch extensions"
-    ):
+    async for extension in paginated_fetch(session, "extension", desc="fetch extensions"):
         extension_filenames.add(extension["xpi"].split("/")[-1])
 
     bad_revisions = []
-    async for revision in paginated_fetch(
-        session, "recipe_revision", desc="fetch revisions"
-    ):
+    async for revision in paginated_fetch(session, "recipe_revision", desc="fetch revisions"):
         try:
             if revision["action"]["name"] != "opt-out-study":
                 continue
@@ -889,9 +851,7 @@ async def revise_recipe_arguments(authed_session):
     service_info = await api_request(authed_session, "GET", "service_info/", admin=True)
     peer_approval_enforced = service_info["peer_approval_enforced"]
 
-    async for recipe in fetch_recipes(
-        authed_session, action="multi-preference-experiment"
-    ):
+    async for recipe in fetch_recipes(authed_session, action="multi-preference-experiment"):
         approved = recipe["approved_revision"]
         latest = recipe["latest_revision"]
 
@@ -939,9 +899,7 @@ async def revise_recipe_arguments(authed_session):
                             "POST",
                             f"approval_request/{approval_id}/approve/",
                             admin=True,
-                            data={
-                                "comment": "mass approved for isEnrollmentPaused fix"
-                            },
+                            data={"comment": "mass approved for isEnrollmentPaused fix"},
                             headers={"Content-Type": "application/json"},
                         )
                         log.info(f"Recipe {recipe['id']} self-approved")

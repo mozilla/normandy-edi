@@ -37,7 +37,10 @@ SERVERS = {
         "admin": "https://dev-admin.normandy.nonprod.cloudops.mozgcp.net",
     },
     "local": {"public": "https://localhost:8000", "admin": "https://localhost:8000"},
-    "requestbin": {"public": "http://requestbin.net/r/sb02oasb", "admin": "http://requestbin.net/r/sb02oasb"},
+    "requestbin": {
+        "public": "http://requestbin.net/r/sb02oasb",
+        "admin": "http://requestbin.net/r/sb02oasb",
+    },
 }
 
 
@@ -102,9 +105,7 @@ async def api_request(
     assert resp_data is not None
 
     if resp_data["status"] >= 400:
-        raise click.ClickException(
-            f"HTTP Error Code {resp_data['status']}: {resp_data['text']}"
-        )
+        raise click.ClickException(f"HTTP Error Code {resp_data['status']}: {resp_data['text']}")
     if resp_data["status"] == 204:
         return None
     try:
@@ -116,5 +117,5 @@ async def api_request(
 
 async def api_fetch(session, endpoint, opts=None, *, version=3, admin=False, headers=None):
     return await api_request(
-        session, "GET", endpoint, opts=opts, version=version, admin=admin, headers=headers,
+        session, "GET", endpoint, opts=opts, version=version, admin=admin, headers=headers
     )

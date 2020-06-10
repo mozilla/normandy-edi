@@ -37,14 +37,19 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
                 return set(c for c in classifications if c != "always")
 
         elif expression.operator.symbol == "||":
-            for side, other in [[expression.left, expression.right], [expression.right, expression.left]]:
+            for side, other in [
+                [expression.left, expression.right],
+                [expression.right, expression.left],
+            ]:
                 if isinstance(expression.right, (parser.Identifier, parser.FilterExpression)):
                     path, classifications = id_to_context_path(expression.right)
                     if path[0] == "studies":
                         return classifications | self.visit(other) | {"sticky"}
-                elif (isinstance(side, parser.BinaryExpression)
-                        and side.operator.symbol == "in"
-                        and isinstance(side.right, (parser.Identifier, parser.FilterExpression))):
+                elif (
+                    isinstance(side, parser.BinaryExpression)
+                    and side.operator.symbol == "in"
+                    and isinstance(side.right, (parser.Identifier, parser.FilterExpression))
+                ):
                     path, classifications = id_to_context_path(side.right)
                     if path[0] == "experiments" and path[1] in ["all", "active"]:
                         return classifications | self.visit(other) | {"old-sticky"}
@@ -84,7 +89,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
         elif expression.operator.symbol in [">=", ">", "<", "<="]:
             if isinstance(expression.left, parser.Identifier):
                 path, classifications = id_to_context_path(expression.left)
-                if path == ["version"]  and isinstance(expression.right, parser.Literal):
+                if path == ["version"] and isinstance(expression.right, parser.Literal):
                     return classifications | {"version"}
 
                 elif path == ["telemetry", "main", "environment", "profile", "creationDate"]:
@@ -96,10 +101,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
                 elif path == ["telemetry", "main", "application", "buildId"]:
                     return classifications | {"old-buildid"}
 
-                return classifications | {
-                    "unclassified",
-                    "unclassified-simple-comparison",
-                }
+                return classifications | {"unclassified", "unclassified-simple-comparison"}
 
             log.info(f"Unclassified comparison {expression.operator.symbol}: {expression}")
             return {"unclassified", "unclassified-cmp"}
@@ -108,9 +110,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
             if isinstance(expression.left, parser.Identifier):
                 path, classifications = id_to_context_path(expression.left)
                 for key in simple_filters:
-                    if path == [key] and isinstance(
-                        expression.right, parser.ArrayLiteral
-                    ):
+                    if path == [key] and isinstance(expression.right, parser.ArrayLiteral):
                         return classifications | {f"{key}-in-list"}
 
                 if path == ["searchEngine"]:
@@ -157,9 +157,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
     def visit_FilterExpression(self, expression):
         if isinstance(expression.expression, parser.Literal):
             return self.visit(
-                parser.Identifier(
-                    value=expression.expression.value, subject=expression.subject
-                )
+                parser.Identifier(value=expression.expression.value, subject=expression.subject)
             )
         else:
             return {"unclassified", "unclassified-filter-expression"}
@@ -184,10 +182,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
 
     def visit_Transform_bucketSample(self, expression):
         if (
-            all(
-                isinstance(a, (parser.Identifier, parser.Literal))
-                for a in expression.args
-            )
+            all(isinstance(a, (parser.Identifier, parser.Literal)) for a in expression.args)
             and isinstance(expression.subject, parser.ArrayLiteral)
             and all(
                 isinstance(s, (parser.Identifier, parser.Literal))
@@ -200,10 +195,7 @@ class FilterExpressionAnalyzer(JEXLAnalyzer):
 
     def visit_Transform_stableSample(self, expression):
         if (
-            all(
-                isinstance(a, (parser.Identifier, parser.Literal))
-                for a in expression.args
-            )
+            all(isinstance(a, (parser.Identifier, parser.Literal)) for a in expression.args)
             and isinstance(expression.subject, parser.ArrayLiteral)
             and all(
                 isinstance(s, (parser.Identifier, parser.Literal))
