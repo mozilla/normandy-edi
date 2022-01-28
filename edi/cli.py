@@ -319,14 +319,54 @@ async def slugs(session, filters):
             log.info(slug)
 
 
-@cli.command("groups")
+@cli.group()
+@logging_options
+@server_options
+def groups():
+    pass
+
+
+@groups.command("list")
 @logging_options
 @server_options
 @async_trampoline
 @with_authed_session
-async def groups(authed_session):
+async def list_groups(authed_session):
     async for group in paginated_fetch(authed_session, "group", admin=True, desc="fetch groups"):
         log.info(group)
+
+
+@groups.command("add")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+@click.option("--name", "-n", required=True, prompt=True)
+async def add_group(authed_session, name):
+    log.info(
+        await api_request(
+            authed_session,
+            "POST",
+            "group",
+            data={"name": name},
+            admin=True,
+        )
+    )
+
+
+@groups.command("delete")
+@logging_options
+@server_options
+@async_trampoline
+@with_authed_session
+@click.option("--group-id", "-g", required=True, prompt=True, type=click.INT)
+async def delete_group(authed_session, group_id):
+    await api_request(
+        authed_session,
+        "DELETE",
+        f"group/{group_id}",
+        admin=True,
+    )
 
 
 @cli.group()
