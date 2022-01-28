@@ -12,7 +12,6 @@ import aiohttp
 import click
 import iso8601
 import jsonschema
-import pyjq
 from pypeln import asyncio_task as pipeline
 from tqdm import tqdm
 
@@ -412,19 +411,13 @@ def recipes():
 @filter_options
 @logging_options
 @server_options
-@click.option("--jq-query", "-j")
 @click.option("--limit", "-l", type=int)
 @async_trampoline
 @with_session
-async def all_recipes(session, filters, jq_query, limit):
-    if jq_query:
-        compiled_query = pyjq.compile(jq_query)
-
+async def all_recipes(session, filters, limit):
     recipes = []
     async for recipe in fetch_recipes(session, **filters, limit=limit):
         recipes.append(recipe)
-    if jq_query is not None:
-        recipes = compiled_query.all(recipes)
 
     if not recipes:
         log.info("No results")
@@ -466,48 +459,33 @@ async def summarize(session, filters):
 @filter_options
 @logging_options
 @server_options
-@click.option("--jq-query", "-j")
 @click.argument("recipe_id", type=int)
 @async_trampoline
 @with_session
-async def get_recipe(session, filters, jq_query, recipe_id):
-    if jq_query:
-        compiled_query = pyjq.compile(jq_query)
-
+async def get_recipe(session, filters, recipe_id):
     recipe = await api_fetch(session, f"recipe/{recipe_id}/")
-    if jq_query is not None:
-        rv = compiled_query.all(recipe)
-    else:
-        rv = recipe
 
-    if not rv:
+    if not recipe:
         log.info("No results")
 
-    if isinstance(rv, str):
-        log.info(rv)
+    if isinstance(recipe, str):
+        log.info(recipe)
     else:
-        log.info(json.dumps(rv, indent=True))
+        log.info(json.dumps(recipe, indent=True))
 
 
 @recipes.command("empty")
 @filter_options
 @logging_options
 @server_options
-@click.option("--jq-query", "-j")
 @click.option("--limit", "-l", type=int)
 @async_trampoline
 @with_session
-async def empty_recipes(session, filters, jq_query, limit):
-    if jq_query:
-        compiled_query = pyjq.compile(jq_query)
-
+async def empty_recipes(session, filters, limit):
     recipes = []
     async for recipe in fetch_recipes(session, **filters, limit=limit):
         if recipe["latest_revision"] is None:
             recipes.append(recipe)
-
-    if jq_query is not None:
-        recipes = compiled_query.all(recipes)
 
     if not recipes:
         log.info("No results")
@@ -714,22 +692,16 @@ def extensions():
 @extensions.command("all")
 @logging_options
 @server_options
-@click.option("--jq-query", "-j")
 @click.option("--limit", "-l", type=int)
 @async_trampoline
 @with_session
-async def all_extensions(session, jq_query, limit):
-    if jq_query:
-        compiled_query = pyjq.compile(jq_query)
-
+async def all_extensions(session, limit):
     extensions = []
 
     async for extension in paginated_fetch(
         session, "extension", desc="fetch extensions", limit=limit
     ):
         extensions.append(extension)
-    if jq_query is not None:
-        extensions = compiled_query.all(extensions)
 
     if not extensions:
         log.info("No results")
@@ -752,19 +724,15 @@ async def delete_extension(authed_session, extension_id):
 
 
 @cli.command("check-extensions")
-@click.option("--jq-query", "-j")
 @server_options
 @logging_options
 @async_trampoline
 @with_session
-async def check_extensions(session, jq_query):
+async def check_extensions(session):
     """
     Check for revisions that reference extension XPIs that don't correspond
     to any uploaded extension.
     """
-    if jq_query:
-        compiled_query = pyjq.compile(jq_query)
-
     extension_filenames = set()
     async for extension in paginated_fetch(session, "extension", desc="fetch extensions"):
         extension_filenames.add(extension["xpi"].split("/")[-1])
@@ -780,9 +748,6 @@ async def check_extensions(session, jq_query):
         addon_filename = revision["arguments"]["addonUrl"].split("/")[-1]
         if addon_filename not in extension_filenames:
             bad_revisions.append(revision)
-
-    if jq_query is not None:
-        bad_revisions = compiled_query.all(bad_revisions)
 
     if not bad_revisions:
         log.info("No bad revisions")
